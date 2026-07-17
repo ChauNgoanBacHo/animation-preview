@@ -1,0 +1,2551 @@
+import './index.css';
+import { SpineStage } from './spineStage.js';
+import { toAssetUrl } from './shared/assetUrl.js';
+import previewBackgroundUrl from './background.jpg';
+
+const ZOOM_STEP = 1.2;
+const FRAME_STEP = 1 / 60;
+const LOADING_SCREEN_MAX_DURATION_MS = 2000;
+const READY_FADE_DURATION_MS = 320;
+const SOUND_FEATURE_ENABLED = false;
+const EXPORT_PADDING_PX = 8;
+
+const CHECKER_BG =
+  'repeating-conic-gradient(#9aa3ad 0% 25%, #cdd4db 0% 50%) 50% / 24px 24px';
+
+const SCENE_IMAGE_BG = `url('${previewBackgroundUrl}') center / cover no-repeat`;
+
+const BACKGROUND_PRESETS = [
+  { id: 'scene', label: 'Scene', value: 'transparent', swatch: 'transparent' },
+  { id: 'checker', label: 'Checker', value: SCENE_IMAGE_BG, swatch: CHECKER_BG },
+];
+
+function backgroundCssValue(background) {
+  if (!background || background === 'scene') {
+    return 'transparent';
+  }
+  const preset = BACKGROUND_PRESETS.find((item) => item.id === background);
+  if (preset) {
+    return preset.value;
+  }
+  // Custom hex color
+  return background;
+}
+
+let resizeFrameId = 0;
+let previewResizeObserver = null;
+let previewInstanceIdSeed = 0;
+
+const state = {
+  folderPath: '',
+  soundFolderPath: '',
+  files: [],
+  soundFiles: [],
+  fileSearch: '',
+  currentIndex: -1,
+  theme: 'dark',
+  background: 'scene',
+  uiMode: 'preview',
+  loading: true,
+  readyAnimating: false,
+  scanning: false,
+  soundScanning: false,
+  error: '',
+  success: '',
+  preview: {
+    stage: null,
+    spine: null,
+    activeInstanceId: '',
+    isLoading: false,
+    error: '',
+    paused: false,
+    loop: true,
+    currentAnimation: '',
+    currentSkin: '',
+    speed: 1,
+    elapsed: 0,
+    duration: 0,
+    zoom: 1,
+    sequence: [],
+    sequenceLoopLast: true,
+    sequenceRunning: false,
+    sequenceDurations: null,
+    sequenceStep: 0,
+    sequenceCleanup: null,
+    expanded: false,
+    playWithSound: false,
+    soundOffsetMs: 0,
+    soundAudio: null,
+    selectedSoundId: '',
+    animationListOpen: false,
+    instances: [],
+  },
+  export: {
+    outputDir: '',
+    anchorX: '0.5',
+    anchorY: '0.5',
+    selectedFileIds: [],
+    isExporting: false,
+    lastSummary: '',
+  },
+  draggingFileId: '',
+  previewRequestId: 0,
+};
+
+const app = document.querySelector('#app');
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
+
+function formatSeconds(value) {
+  return Number.isFinite(value) ? value.toFixed(2) : '0.00';
+}
+
+function formatSoundOffset(valueMs) {
+  return `${(valueMs / 1000).toFixed(1)}s`;
+}
+
+function formatAnimationDuration(value) {
+  return `${formatSeconds(value)}s`;
+}
+
+function playbackToggleIconMarkup() {
+  if (state.preview.paused || hasReachedAnimationEnd()) {
+    return `
+      <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M8 5l11 7-11 7z" fill="currentColor" stroke="none" />
+      </svg>
+    `;
+  }
+
+  return `
+    <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="7" y="5" width="3.5" height="14" rx="1" fill="currentColor" stroke="none" />
+      <rect x="13.5" y="5" width="3.5" height="14" rx="1" fill="currentColor" stroke="none" />
+    </svg>
+  `;
+}
+
+function snapToFrame(value) {
+  return Math.round(value / FRAME_STEP) * FRAME_STEP;
+}
+
+function updateFolder(value) {
+  state.folderPath = value;
+  localStorage.setItem('spine-preview-folder', value);
+}
+
+function updateSoundFolder(value) {
+  state.soundFolderPath = value;
+  localStorage.setItem('spine-preview-sound-folder', value);
+}
+
+function setTheme(theme) {
+  state.theme = theme === 'light' ? 'light' : 'dark';
+  localStorage.setItem('spine-preview-theme', state.theme);
+  render();
+}
+
+function applyPreviewBackground() {
+  const css = backgroundCssValue(state.background);
+  document.querySelectorAll('[data-preview-bg-target]').forEach((node) => {
+    node.style.background = css;
+  });
+
+  // Sync swatch active state + custom swatch color without re-rendering,
+  // so the native color popup stays open while the user is still picking.
+  const isCustom = !BACKGROUND_PRESETS.some((preset) => preset.id === state.background);
+  document.querySelectorAll('[data-background]').forEach((node) => {
+    node.classList.toggle('active', node.dataset.background === state.background);
+  });
+  const customSwatch = document.querySelector('.bg-swatch-custom');
+  if (customSwatch) {
+    customSwatch.classList.toggle('active', isCustom);
+    if (isCustom) {
+      customSwatch.style.setProperty('--swatch', state.background);
+    }
+  }
+}
+
+function setBackground(background) {
+  state.background = background;
+  localStorage.setItem('spine-preview-background', background);
+  render();
+}
+
+// Live update for the color picker: changes the background and persists it
+// WITHOUT re-rendering, so the native color popup stays open while picking.
+function setBackgroundLive(background) {
+  state.background = background;
+  localStorage.setItem('spine-preview-background', background);
+  applyPreviewBackground();
+}
+
+function updateStatus(error = '') {
+  state.error = error;
+  if (error) {
+    state.success = '';
+  }
+  render();
+}
+
+function updateSuccess(message = '') {
+  state.success = message;
+  if (message) {
+    state.error = '';
+  }
+  render();
+}
+
+function setUiMode(mode) {
+  state.uiMode = mode === 'export' ? 'export' : 'preview';
+  render();
+}
+
+function syncDefaultExportOutputDir() {
+  if (!state.folderPath.trim()) {
+    return;
+  }
+
+  if (!state.export.outputDir.trim()) {
+    state.export.outputDir = state.folderPath.trim();
+  }
+}
+
+function getCurrentFile() {
+  return state.files[state.currentIndex] ?? null;
+}
+
+function getFileById(fileId) {
+  return state.files.find((file) => file.id === fileId) ?? null;
+}
+
+function isExportFileSelected(fileId) {
+  return state.export.selectedFileIds.includes(fileId);
+}
+
+function spineDisplayName(file) {
+  return String(file?.fileName ?? '')
+    .replace(/\.json$/i, '')
+    .trim();
+}
+
+function createPreviewInstance(fileId) {
+  return {
+    id: `preview-instance-${previewInstanceIdSeed += 1}`,
+    fileId,
+    spine: null,
+    currentAnimation: '',
+    currentSkin: '',
+    loop: true,
+    paused: false,
+    speed: 1,
+    elapsed: 0,
+    duration: 0,
+    zoom: 1,
+    sequence: [],
+    sequenceLoopLast: true,
+    sequenceRunning: false,
+    sequenceDurations: null,
+    sequenceStep: 0,
+    sequenceCleanup: null,
+  };
+}
+
+function getPreviewInstanceById(instanceId) {
+  return state.preview.instances.find((instance) => instance.id === instanceId) ?? null;
+}
+
+function getPreviewInstanceBySpine(spine) {
+  return state.preview.instances.find((instance) => instance.spine === spine) ?? null;
+}
+
+function getActivePreviewInstance() {
+  return getPreviewInstanceById(state.preview.activeInstanceId);
+}
+
+function getPreviewFile(instance) {
+  return instance ? getFileById(instance.fileId) : null;
+}
+
+function syncPreviewInstances() {
+  const validIds = new Set(state.files.map((file) => file.id));
+  state.preview.instances = state.preview.instances.filter(
+    (instance) => validIds.has(instance.fileId),
+  );
+  if (!getActivePreviewInstance()) {
+    state.preview.activeInstanceId = state.preview.instances[0]?.id ?? '';
+  }
+}
+
+function normalizeFileBaseName(name) {
+  return String(name ?? '')
+    .replace(/\.[^.]+$/, '')
+    .trim()
+    .toLowerCase();
+}
+
+function getCurrentSoundFile() {
+  if (!SOUND_FEATURE_ENABLED) {
+    return null;
+  }
+
+  if (!state.soundFiles.length) {
+    return null;
+  }
+
+  if (state.preview.selectedSoundId) {
+    return state.soundFiles.find((sound) => sound.id === state.preview.selectedSoundId) ?? null;
+  }
+
+  const current = getCurrentFile();
+  if (!current) {
+    return null;
+  }
+
+  const candidates = [
+    normalizeFileBaseName(current.fileName),
+    normalizeFileBaseName(current.relativeName.split('/').pop() ?? ''),
+    normalizeFileBaseName(state.preview.currentAnimation),
+  ].filter(Boolean);
+
+  return (
+    state.soundFiles.find((sound) => candidates.includes(sound.baseName)) ??
+    state.soundFiles.find((sound) => candidates.some((name) => sound.baseName.includes(name) || name.includes(sound.baseName))) ??
+    null
+  );
+}
+
+function getFilteredFiles() {
+  const query = state.fileSearch.trim().toLowerCase();
+  if (!query) {
+    return state.files;
+  }
+
+  return state.files.filter((file) => {
+    const name = `${file.relativeName} ${file.fileName}`.toLowerCase();
+    return name.includes(query);
+  });
+}
+
+function getFilteredIndex() {
+  const current = getCurrentFile();
+  if (!current) {
+    return -1;
+  }
+
+  return getFilteredFiles().findIndex((file) => file.id === current.id);
+}
+
+function clampIndex(index) {
+  if (state.files.length === 0) {
+    return -1;
+  }
+  return Math.max(0, Math.min(index, state.files.length - 1));
+}
+
+function setCurrentIndex(index) {
+  const nextIndex = clampIndex(index);
+  if (nextIndex === -1 || nextIndex === state.currentIndex) {
+    state.currentIndex = nextIndex;
+    render();
+    return;
+  }
+
+  state.currentIndex = nextIndex;
+  render();
+}
+
+function setCurrentFileById(fileId) {
+  const index = state.files.findIndex((file) => file.id === fileId);
+  if (index >= 0) {
+    setCurrentIndex(index);
+  }
+}
+
+function normalizeSearchValue(value) {
+  return value.trim().toLowerCase();
+}
+
+function maybeSelectFileFromSearch() {
+  const query = normalizeSearchValue(state.fileSearch);
+  if (!query) {
+    return false;
+  }
+
+  const exactMatch = state.files.find(
+    (file) => file.relativeName.toLowerCase() === query || file.fileName.toLowerCase() === query,
+  );
+
+  if (exactMatch) {
+    state.fileSearch = '';
+    setCurrentFileById(exactMatch.id);
+    return true;
+  }
+
+  return false;
+}
+
+function clearFileSearch() {
+  state.fileSearch = '';
+  render();
+
+  const searchInput = document.querySelector('[data-file-search]');
+  if (searchInput instanceof HTMLInputElement) {
+    searchInput.focus();
+  }
+}
+
+function clampAnchorValue(value) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) {
+    return 0.5;
+  }
+  return Math.max(0, Math.min(1, next));
+}
+
+function getExportAnchor() {
+  return {
+    x: clampAnchorValue(state.export.anchorX),
+    y: clampAnchorValue(state.export.anchorY),
+  };
+}
+
+function setExportSelection(fileIds) {
+  const validIds = fileIds.filter((fileId) => getFileById(fileId));
+  state.export.selectedFileIds = [...new Set(validIds)];
+}
+
+function toggleExportFileSelection(fileId) {
+  if (!getFileById(fileId)) {
+    return;
+  }
+
+  if (isExportFileSelected(fileId)) {
+    state.export.selectedFileIds = state.export.selectedFileIds.filter((id) => id !== fileId);
+  } else {
+    state.export.selectedFileIds = [...state.export.selectedFileIds, fileId];
+  }
+}
+
+function syncExportSelection() {
+  const validIds = new Set(state.files.map((file) => file.id));
+  setExportSelection(state.export.selectedFileIds.filter((fileId) => validIds.has(fileId)));
+}
+
+function createOffscreenExportRoot() {
+  const root = document.createElement('div');
+  root.setAttribute('aria-hidden', 'true');
+  root.style.position = 'fixed';
+  root.style.left = '-100000px';
+  root.style.top = '0';
+  root.style.width = '64px';
+  root.style.height = '64px';
+  root.style.pointerEvents = 'none';
+  root.style.opacity = '0';
+  document.body.appendChild(root);
+  return root;
+}
+
+async function exportFileToSpinePackageData(file, anchor) {
+  const root = createOffscreenExportRoot();
+  const stage = new SpineStage(root, {
+    backgroundColor: 0x000000,
+    backgroundAlpha: 0,
+  });
+
+  try {
+    const spine = await stage.loadSpine({
+      jsonPath: file.jsonPath,
+      atlasPath: file.atlasPath,
+    });
+
+    if (file.skins.length) {
+      const skin = file.skins.includes('default') ? 'default' : file.skins[0];
+      SpineStage.setSkin(spine, skin);
+    }
+
+    const animation = getDefaultAnimation(file);
+    if (animation) {
+      SpineStage.playAnimation(spine, animation, false);
+    }
+
+    spine.update(0);
+    await waitForNextFrame();
+
+    const bounds = spine.getLocalBounds();
+    const minX = bounds.x;
+    const minY = bounds.y;
+    const width = Math.max(2, Math.ceil(bounds.width + EXPORT_PADDING_PX * 2));
+    const height = Math.max(2, Math.ceil(bounds.height + EXPORT_PADDING_PX * 2));
+    stage.app.renderer.resize(width, height);
+    spine.position.set(
+      EXPORT_PADDING_PX - minX,
+      EXPORT_PADDING_PX - minY,
+    );
+    stage.renderOnce();
+
+    const exportCanvas = stage.app.renderer.extract.canvas(stage.app.stage);
+    const actualWidth = exportCanvas.width || width;
+    const actualHeight = exportCanvas.height || height;
+    const scaleX = actualWidth / width;
+    const scaleY = actualHeight / height;
+    const basePath = String(file.relativeName || file.fileName).replace(/\.json$/i, '');
+
+    return {
+      pngDataUrl: exportCanvas.toDataURL('image/png'),
+      width: actualWidth,
+      height: actualHeight,
+      pivotX: (EXPORT_PADDING_PX + (bounds.width * anchor.x)) * scaleX,
+      pivotY: (EXPORT_PADDING_PX + (bounds.height * anchor.y)) * scaleY,
+      spineVersion: file.version,
+      relativeBasePath: `${basePath}_pivot`,
+    };
+  } finally {
+    stage.destroy();
+    root.remove();
+  }
+}
+
+async function handleSelectExportFolder() {
+  const selectExportFolder = window.spinePreview.selectExportFolder
+    ?? window.spinePreview.selectFolder;
+  if (typeof selectExportFolder !== 'function') {
+    updateStatus('Không tìm thấy API chọn folder export. Restart app giúp mình nhé.');
+    return;
+  }
+
+  const folder = await selectExportFolder();
+  if (folder) {
+    state.export.outputDir = folder;
+    state.export.lastSummary = '';
+    updateSuccess('');
+    render();
+  }
+}
+
+async function handleBatchExportPng() {
+  syncExportSelection();
+  const files = state.export.selectedFileIds
+    .map((fileId) => getFileById(fileId))
+    .filter(Boolean);
+
+  if (!files.length) {
+    updateStatus('Chọn ít nhất một Spine file để export PNG.');
+    return;
+  }
+
+  if (!state.export.outputDir.trim()) {
+    updateStatus('Chọn folder output trước khi export PNG.');
+    return;
+  }
+
+  state.export.isExporting = true;
+  state.export.lastSummary = '';
+  updateStatus('');
+  render();
+
+  try {
+    const anchor = getExportAnchor();
+    const payloadFiles = [];
+
+    for (const file of files) {
+      const packageData = await exportFileToSpinePackageData(file, anchor);
+      payloadFiles.push(packageData);
+    }
+
+    const saveBatchSpineExport = window.spinePreview.saveBatchSpineExport
+      ?? window.spinePreview.saveBatchPng;
+    if (typeof saveBatchSpineExport !== 'function') {
+      updateStatus('Không tìm thấy API export Spine package. Restart app giúp mình nhé.');
+      return;
+    }
+
+    const result = await saveBatchSpineExport({
+      outputDir: state.export.outputDir.trim(),
+      files: payloadFiles,
+    });
+
+    if (!result?.ok) {
+      updateStatus(result?.error || 'Không thể export PNG.');
+      return;
+    }
+
+    state.export.lastSummary = `${result.writtenFiles.length} spine packages exported.`;
+    updateSuccess(state.export.lastSummary);
+  } catch (error) {
+    updateStatus(error instanceof Error ? error.message : 'Không thể export PNG.');
+  } finally {
+    state.export.isExporting = false;
+    render();
+  }
+}
+
+function resetActivePreviewState() {
+  state.preview.spine = null;
+  state.preview.activeInstanceId = '';
+  state.preview.paused = false;
+  state.preview.loop = true;
+  state.preview.currentAnimation = '';
+  state.preview.currentSkin = '';
+  state.preview.speed = 1;
+  state.preview.elapsed = 0;
+  state.preview.duration = 0;
+  state.preview.zoom = 1;
+  state.preview.sequence = [];
+  state.preview.sequenceLoopLast = true;
+  state.preview.sequenceRunning = false;
+  state.preview.sequenceDurations = null;
+  state.preview.sequenceStep = 0;
+  state.preview.sequenceCleanup = null;
+}
+
+function syncPreviewStateFromInstance(instance) {
+  if (!instance) {
+    resetActivePreviewState();
+    return;
+  }
+
+  state.preview.activeInstanceId = instance.id;
+  state.preview.spine = instance.spine;
+  state.preview.paused = instance.paused;
+  state.preview.loop = instance.loop;
+  state.preview.currentAnimation = instance.currentAnimation;
+  state.preview.currentSkin = instance.currentSkin;
+  state.preview.speed = instance.speed;
+  state.preview.elapsed = instance.elapsed;
+  state.preview.duration = instance.duration;
+  state.preview.zoom = instance.zoom;
+  state.preview.sequence = [...instance.sequence];
+  state.preview.sequenceLoopLast = instance.sequenceLoopLast;
+  state.preview.sequenceRunning = instance.sequenceRunning;
+  state.preview.sequenceDurations = instance.sequenceDurations;
+  state.preview.sequenceStep = instance.sequenceStep;
+  state.preview.sequenceCleanup = instance.sequenceCleanup;
+}
+
+function applyInstanceTimeScale(instance) {
+  if (!instance?.spine) {
+    return;
+  }
+
+  instance.spine.state.timeScale = instance.paused ? 0 : instance.speed;
+}
+
+function setActivePreviewInstance(instanceId, options = {}) {
+  const instance = getPreviewInstanceById(instanceId);
+  if (!instance) {
+    return;
+  }
+
+  if (options.bringToFront !== false) {
+    state.preview.stage?.bringToFront(instance.spine);
+  }
+
+  syncPreviewStateFromInstance(instance);
+  if (options.syncSourceSelection !== false) {
+    const index = state.files.findIndex((file) => file.id === instance.fileId);
+    if (index >= 0) {
+      state.currentIndex = index;
+    }
+  }
+}
+
+function stopCurrentSound() {
+  if (state.preview.soundAudio) {
+    state.preview.soundAudio.pause();
+    state.preview.soundAudio.currentTime = 0;
+    state.preview.soundAudio = null;
+  }
+}
+
+function resetPreviewSoundState() {
+  stopCurrentSound();
+  state.preview.playWithSound = false;
+  state.preview.soundOffsetMs = 0;
+  state.preview.selectedSoundId = '';
+}
+
+function hasReachedAnimationEnd() {
+  return !state.preview.loop && state.preview.duration > 0 && state.preview.elapsed >= state.preview.duration;
+}
+
+function setSelectedSound(soundId) {
+  if (!SOUND_FEATURE_ENABLED) {
+    return;
+  }
+
+  state.preview.selectedSoundId = soundId;
+  render();
+}
+
+function toggleExpandedPreview(forceValue) {
+  state.preview.expanded = typeof forceValue === 'boolean' ? forceValue : !state.preview.expanded;
+  render();
+
+  if (state.preview.stage) {
+    refreshPreviewLayout();
+  }
+}
+
+function toggleAnimationList(forceValue) {
+  state.preview.animationListOpen =
+    typeof forceValue === 'boolean' ? forceValue : !state.preview.animationListOpen;
+  render();
+}
+
+function attachStageView() {
+  if (!state.preview.stage) {
+    return;
+  }
+
+  const selector = state.preview.expanded ? '[data-preview-modal-viewport]' : '[data-preview-viewport]';
+  const viewport = document.querySelector(selector);
+  const view = state.preview.stage.app.view;
+  if (viewport) {
+    state.preview.stage.setContainer(viewport);
+  }
+
+  if (viewport && view.parentElement !== viewport) {
+    viewport.appendChild(view);
+  }
+}
+
+function observePreviewViewport() {
+  previewResizeObserver?.disconnect();
+
+  if (!state.preview.stage) {
+    return;
+  }
+
+  const selector = state.preview.expanded ? '[data-preview-modal-viewport]' : '[data-preview-viewport]';
+  const viewport = document.querySelector(selector);
+  if (!viewport) {
+    return;
+  }
+
+  previewResizeObserver = new ResizeObserver(() => {
+    schedulePreviewResize();
+  });
+  previewResizeObserver.observe(viewport);
+}
+
+function refreshPreviewLayout() {
+  if (!state.preview.stage) {
+    return;
+  }
+
+  attachStageView();
+  state.preview.stage.syncViewportSize();
+  state.preview.stage.renderOnce();
+}
+
+function schedulePreviewResize() {
+  if (resizeFrameId) {
+    window.cancelAnimationFrame(resizeFrameId);
+  }
+
+  resizeFrameId = window.requestAnimationFrame(() => {
+    resizeFrameId = 0;
+    refreshPreviewLayout();
+  });
+}
+
+function waitForNextFrame() {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
+}
+
+function currentStageThemeOptions() {
+  return {
+    backgroundColor: 0x000000,
+    backgroundAlpha: 0,
+  };
+}
+
+function commitFileSearch(value) {
+  state.fileSearch = value;
+  if (!maybeSelectFileFromSearch()) {
+    render();
+    return false;
+  }
+
+  return true;
+}
+
+async function handleSelectFolder() {
+  const folder = await window.spinePreview.selectFolder();
+  if (folder) {
+    updateFolder(folder);
+    updateStatus('');
+    render();
+  }
+}
+
+async function handleSelectSoundFolder() {
+  if (!SOUND_FEATURE_ENABLED) {
+    return;
+  }
+
+  const folder = await window.spinePreview.selectSoundFolder();
+  if (folder) {
+    updateSoundFolder(folder);
+    updateStatus('');
+    render();
+  }
+}
+
+async function handleScanFolder() {
+  if (!state.folderPath.trim()) {
+    updateStatus('Chọn folder animation trước khi scan.');
+    return;
+  }
+
+  state.scanning = true;
+  state.files = [];
+  state.currentIndex = -1;
+  state.export.selectedFileIds = [];
+  state.export.lastSummary = '';
+  state.preview.instances = [];
+  state.preview.activeInstanceId = '';
+  updateStatus('');
+  destroyPreview();
+  render();
+
+  try {
+    const result = await window.spinePreview.scanFolder(state.folderPath.trim());
+    if (result.error) {
+      updateStatus(result.error);
+      return;
+    }
+
+    state.files = result.files ?? [];
+    state.fileSearch = '';
+    state.currentIndex = state.files.length ? 0 : -1;
+    state.export.outputDir = state.folderPath.trim();
+    setExportSelection(state.files[0] ? [state.files[0].id] : []);
+    if (!state.files.length) {
+      updateStatus('Không tìm thấy Spine file hợp lệ. App hiện cần folder chứa file .json Spine và ít nhất một file .atlas có thể ghép cặp trong cùng thư mục.');
+      return;
+    }
+
+    updateStatus('');
+    render();
+    await ensurePreviewStage();
+    if (state.files[0]) {
+      await addPreviewInstance(state.files[0].id);
+    }
+  } catch (error) {
+    updateStatus(error instanceof Error ? error.message : 'Không thể scan folder.');
+  } finally {
+    state.scanning = false;
+    render();
+  }
+}
+
+async function handleScanSoundFolder() {
+  if (!SOUND_FEATURE_ENABLED) {
+    return;
+  }
+
+  if (!state.soundFolderPath.trim()) {
+    updateStatus('Chọn folder sound trước khi scan.');
+    return;
+  }
+
+  state.soundScanning = true;
+  render();
+
+  try {
+    const result = await window.spinePreview.scanSoundFolder(state.soundFolderPath.trim());
+    if (result.error) {
+      updateStatus(result.error);
+      return;
+    }
+
+    state.soundFiles = result.files ?? [];
+    if (!state.soundFiles.find((sound) => sound.id === state.preview.selectedSoundId)) {
+      state.preview.selectedSoundId = '';
+    }
+    updateStatus('');
+    render();
+  } catch (error) {
+    updateStatus(error instanceof Error ? error.message : 'Không thể scan folder sound.');
+  } finally {
+    state.soundScanning = false;
+    render();
+  }
+}
+
+function setPreviewPlaybackMeta() {
+  const instance = getActivePreviewInstance();
+  if (!instance?.spine) {
+    state.preview.currentAnimation = '';
+    state.preview.duration = 0;
+    state.preview.elapsed = 0;
+    return;
+  }
+
+  const playback = SpineStage.currentPlayback(instance.spine);
+  instance.currentAnimation = playback.name || instance.currentAnimation;
+
+  if (instance.sequenceRunning && instance.sequenceDurations) {
+    const before = instance.sequenceDurations.durations
+      .slice(0, instance.sequenceStep)
+      .reduce((sum, duration) => sum + duration, 0);
+    instance.duration = instance.sequenceDurations.total;
+    instance.elapsed = Math.min(before + playback.elapsed, instance.sequenceDurations.total);
+  } else {
+    instance.duration = playback.duration;
+    instance.elapsed = playback.elapsed;
+  }
+
+  syncPreviewStateFromInstance(instance);
+}
+
+function clearActiveSequence() {
+  const instance = getActivePreviewInstance();
+  instance?.sequenceCleanup?.();
+  if (instance) {
+    instance.sequenceCleanup = null;
+    instance.sequenceRunning = false;
+    instance.sequenceDurations = null;
+    instance.sequenceStep = 0;
+  }
+  state.preview.sequenceCleanup = null;
+  state.preview.sequenceRunning = false;
+  state.preview.sequenceDurations = null;
+  state.preview.sequenceStep = 0;
+}
+
+async function ensurePreviewStage() {
+  if (state.preview.stage) {
+    attachStageView();
+    state.preview.stage.syncViewportSize();
+    return state.preview.stage;
+  }
+
+  const viewport = document.querySelector('[data-preview-viewport]');
+  if (!viewport) {
+    state.preview.error = 'Khong tao duoc preview viewport.';
+    render();
+    return null;
+  }
+
+  const stage = new SpineStage(viewport, currentStageThemeOptions());
+  state.preview.stage = stage;
+  stage.app.ticker.add(handleTicker);
+  return stage;
+}
+
+function getDefaultAnimation(file) {
+  if (!file?.animations?.length) {
+    return '';
+  }
+
+  return (
+    file.animations.find((name) =>
+      ['idle', 'default', 'hover', 'hold', 'spin', 'loop'].includes(name.toLowerCase()),
+    ) ?? file.animations[0]
+  );
+}
+
+function getInitialInstanceCenter(instanceCount, point) {
+  if (point) {
+    return point;
+  }
+
+  const stage = state.preview.stage;
+  const center = stage?.centerPoint() ?? { x: 360, y: 260 };
+  const offset = Math.min(instanceCount, 6) * 28;
+  return {
+    x: center.x + offset,
+    y: center.y + offset,
+  };
+}
+
+async function addPreviewInstance(fileId, options = {}) {
+  const file = getFileById(fileId);
+  const stage = await ensurePreviewStage();
+  if (!file || !stage) {
+    return;
+  }
+
+  const requestId = state.previewRequestId + 1;
+  state.previewRequestId = requestId;
+  state.preview.isLoading = true;
+  state.preview.error = '';
+  render();
+
+  const instance = createPreviewInstance(fileId);
+  state.preview.instances = [...state.preview.instances, instance];
+
+  try {
+    const spine = await stage.loadSpine({
+      jsonPath: file.jsonPath,
+      atlasPath: file.atlasPath,
+    });
+
+    if (requestId !== state.previewRequestId) {
+      stage.removeSpine(spine);
+      state.preview.instances = state.preview.instances.filter((item) => item.id !== instance.id);
+      return;
+    }
+
+    instance.spine = spine;
+
+    if (file.skins.length) {
+      instance.currentSkin = file.skins.includes('default') ? 'default' : file.skins[0];
+      SpineStage.setSkin(spine, instance.currentSkin);
+    }
+
+    instance.currentAnimation = getDefaultAnimation(file);
+    if (instance.currentAnimation) {
+      SpineStage.playAnimation(spine, instance.currentAnimation, instance.loop);
+      instance.duration = SpineStage.animationDuration(spine, instance.currentAnimation);
+    }
+
+    spine.update(0);
+    await waitForNextFrame();
+    stage.syncViewportSize();
+    const center = getInitialInstanceCenter(state.preview.instances.length - 1, options.point);
+    stage.centerSpineAt(spine, center.x, center.y);
+    instance.zoom = stage.setSpineScale(spine, 1);
+    applyInstanceTimeScale(instance);
+    setActivePreviewInstance(instance.id);
+    stage.renderOnce();
+  } catch (error) {
+    state.preview.instances = state.preview.instances.filter((item) => item.id !== instance.id);
+    if (requestId === state.previewRequestId) {
+      state.preview.error = error instanceof Error ? error.message : 'Không thể load spine preview.';
+    }
+  } finally {
+    if (requestId === state.previewRequestId) {
+      state.preview.isLoading = false;
+      render();
+    }
+  }
+}
+
+function removePreviewInstance(instanceId) {
+  const instance = getPreviewInstanceById(instanceId);
+  if (!instance) {
+    return;
+  }
+
+  instance.sequenceCleanup?.();
+  stopCurrentSound();
+  state.preview.stage?.removeSpine(instance.spine);
+  state.preview.instances = state.preview.instances.filter((item) => item.id !== instanceId);
+  if (state.preview.activeInstanceId === instanceId) {
+    const nextInstance = state.preview.instances[state.preview.instances.length - 1] ?? null;
+    syncPreviewStateFromInstance(nextInstance);
+  }
+  state.preview.stage?.renderOnce();
+  render();
+}
+
+function handleTicker() {
+  const activeInstance = getActivePreviewInstance();
+  if (!activeInstance?.spine) {
+    return;
+  }
+
+  setPreviewPlaybackMeta();
+  const currentAnimation = document.querySelector('[data-current-animation]');
+  const elapsed = document.querySelector('[data-elapsed]');
+  const progress = document.querySelector('[data-progress]');
+  const playPauseButton = document.querySelector('[data-action="toggle-pause"]');
+  const duration = state.preview.duration || 0;
+  const ratio = duration > 0 ? Math.min(state.preview.elapsed / duration, 1) : 0;
+
+  if (currentAnimation) {
+    currentAnimation.textContent = state.preview.currentAnimation || 'None';
+  }
+  if (elapsed) {
+    elapsed.textContent = `${formatSeconds(state.preview.elapsed)} / ${formatSeconds(duration)}s`;
+  }
+  if (progress instanceof HTMLInputElement) {
+    progress.max = String(duration || 0);
+    progress.step = String(FRAME_STEP);
+    progress.value = String(snapToFrame(state.preview.elapsed));
+  }
+  if (playPauseButton instanceof HTMLButtonElement) {
+    // Only rewrite the button when the play/pause state actually changes.
+    // Replacing innerHTML every frame removes the element mid-click, which
+    // swallows the click event and makes the button feel unresponsive.
+    const isPlayState = state.preview.paused || hasReachedAnimationEnd();
+    const nextState = isPlayState ? 'play' : 'pause';
+    if (playPauseButton.dataset.iconState !== nextState) {
+      playPauseButton.dataset.iconState = nextState;
+      playPauseButton.innerHTML = playbackToggleIconMarkup();
+      playPauseButton.setAttribute('aria-label', isPlayState ? 'Play' : 'Pause');
+    }
+  }
+  const fill = document.querySelector('[data-progress-fill]');
+  if (fill) {
+    fill.setAttribute('style', `width:${ratio * 100}%`);
+  }
+}
+
+function destroyPreview() {
+  stopCurrentSound();
+  state.preview.instances.forEach((instance) => instance.sequenceCleanup?.());
+  if (state.preview.stage) {
+    state.preview.stage.app.ticker.remove(handleTicker);
+    state.preview.stage.destroy();
+  }
+
+  state.preview.stage = null;
+  state.preview.isLoading = false;
+  state.preview.error = '';
+  state.preview.instances = [];
+  resetActivePreviewState();
+}
+
+function handleAnimationChange(value) {
+  const instance = getActivePreviewInstance();
+  if (!instance?.spine || !value) {
+    return;
+  }
+
+  stopCurrentSound();
+  clearActiveSequence();
+  state.preview.animationListOpen = false;
+  instance.currentAnimation = value;
+  instance.duration = SpineStage.animationDuration(instance.spine, value);
+  instance.elapsed = 0;
+  instance.paused = false;
+  SpineStage.playAnimation(instance.spine, value, instance.loop);
+  applyInstanceTimeScale(instance);
+  syncPreviewStateFromInstance(instance);
+  state.preview.stage?.renderOnce();
+  maybePlayCurrentSound();
+  render();
+}
+
+function handleSkinChange(value) {
+  const instance = getActivePreviewInstance();
+  if (!instance?.spine || !value) {
+    return;
+  }
+
+  instance.currentSkin = value;
+  SpineStage.setSkin(instance.spine, value);
+  if (instance.currentAnimation) {
+    SpineStage.playAnimation(instance.spine, instance.currentAnimation, instance.loop);
+  }
+  applyInstanceTimeScale(instance);
+  syncPreviewStateFromInstance(instance);
+  state.preview.stage?.renderOnce();
+  render();
+}
+
+function togglePause() {
+  const instance = getActivePreviewInstance();
+  if (!instance?.spine) {
+    return;
+  }
+
+  if (hasReachedAnimationEnd()) {
+    restartAnimation();
+    return;
+  }
+
+  const wasPaused = instance.paused;
+  instance.paused = !instance.paused;
+  applyInstanceTimeScale(instance);
+  syncPreviewStateFromInstance(instance);
+  if (wasPaused && !instance.paused) {
+    maybePlayCurrentSound();
+  } else if (instance.paused) {
+    stopCurrentSound();
+  }
+  state.preview.stage?.renderOnce();
+  render();
+}
+
+function restartAnimation() {
+  const instance = getActivePreviewInstance();
+  if (!instance?.spine || !instance.currentAnimation) {
+    return;
+  }
+
+  stopCurrentSound();
+  SpineStage.playAnimation(instance.spine, instance.currentAnimation, instance.loop);
+  instance.elapsed = 0;
+  instance.paused = false;
+  applyInstanceTimeScale(instance);
+  syncPreviewStateFromInstance(instance);
+  state.preview.stage?.renderOnce();
+  maybePlayCurrentSound();
+  render();
+}
+
+function toggleLoop() {
+  const instance = getActivePreviewInstance();
+  if (!instance?.spine || !instance.currentAnimation) {
+    state.preview.loop = !state.preview.loop;
+    render();
+    return;
+  }
+
+  clearActiveSequence();
+  instance.loop = !instance.loop;
+  SpineStage.playAnimation(instance.spine, instance.currentAnimation, instance.loop);
+  applyInstanceTimeScale(instance);
+  syncPreviewStateFromInstance(instance);
+  state.preview.stage?.renderOnce();
+  render();
+}
+
+function maybePlayCurrentSound() {
+  if (!SOUND_FEATURE_ENABLED) {
+    return;
+  }
+
+  const soundFile = getCurrentSoundFile();
+  if (!state.preview.playWithSound || !soundFile) {
+    return;
+  }
+
+  stopCurrentSound();
+  const audio = new Audio(toAssetUrl(soundFile.soundPath));
+  audio.preload = 'auto';
+  state.preview.soundAudio = audio;
+
+  const delay = state.preview.soundOffsetMs;
+  if (delay <= 0) {
+    audio.play().catch(() => {
+      state.preview.soundAudio = null;
+    });
+    return;
+  }
+
+  window.setTimeout(() => {
+    if (state.preview.soundAudio !== audio) {
+      return;
+    }
+    audio.play().catch(() => {
+      state.preview.soundAudio = null;
+    });
+  }, delay);
+}
+
+function addToSequence(name) {
+  const instance = getActivePreviewInstance();
+  if (!instance || !name) {
+    return;
+  }
+
+  instance.sequence = [...instance.sequence, name];
+  syncPreviewStateFromInstance(instance);
+  render();
+}
+
+function removeFromSequence(index) {
+  const instance = getActivePreviewInstance();
+  if (!instance) {
+    return;
+  }
+
+  instance.sequence = instance.sequence.filter((_, itemIndex) => itemIndex !== index);
+  syncPreviewStateFromInstance(instance);
+  render();
+}
+
+function clearSequence() {
+  const instance = getActivePreviewInstance();
+  clearActiveSequence();
+  if (!instance) {
+    return;
+  }
+
+  instance.sequence = [];
+  syncPreviewStateFromInstance(instance);
+  render();
+}
+
+function playSequence() {
+  const instance = getActivePreviewInstance();
+  const spine = instance?.spine;
+  if (!instance || !spine || !instance.sequence.length) {
+    return;
+  }
+
+  stopCurrentSound();
+  clearActiveSequence();
+  const durations = instance.sequence.map((name) => SpineStage.animationDuration(spine, name));
+  const total = durations.reduce((sum, duration) => sum + duration, 0);
+  instance.sequenceDurations = { durations, total };
+  instance.sequenceStep = 0;
+  instance.sequenceRunning = true;
+  instance.sequenceCleanup = SpineStage.onComplete(spine, () => {
+    instance.sequenceStep = Math.min(
+      instance.sequenceStep + 1,
+      instance.sequence.length - 1,
+    );
+  });
+  SpineStage.playSequence(spine, instance.sequence, instance.sequenceLoopLast);
+  instance.currentAnimation = instance.sequence[0];
+  instance.elapsed = 0;
+  instance.duration = total;
+  instance.paused = false;
+  applyInstanceTimeScale(instance);
+  syncPreviewStateFromInstance(instance);
+  state.preview.stage?.renderOnce();
+  maybePlayCurrentSound();
+  render();
+}
+
+function setSpeed(value) {
+  const instance = getActivePreviewInstance();
+  const speed = Number(value);
+  state.preview.speed = speed;
+  if (instance) {
+    instance.speed = speed;
+    applyInstanceTimeScale(instance);
+  }
+  const speedValue = document.querySelector('[data-speed-value]');
+  if (speedValue) {
+    speedValue.textContent = `${speed.toFixed(2)}x`;
+  }
+  state.preview.stage?.renderOnce();
+}
+
+function setSoundOffset(value) {
+  if (!SOUND_FEATURE_ENABLED) {
+    return;
+  }
+
+  state.preview.soundOffsetMs = Math.round(Number(value) * 1000);
+  const soundOffsetValue = document.querySelector('[data-sound-offset-value]');
+  if (soundOffsetValue) {
+    soundOffsetValue.textContent = formatSoundOffset(state.preview.soundOffsetMs);
+  }
+}
+
+function seekAnimation(value) {
+  const instance = getActivePreviewInstance();
+  if (!instance?.spine || !state.preview.stage) {
+    return;
+  }
+
+  const localTime = snapToFrame(Number(value));
+  SpineStage.seek(instance.spine, localTime);
+  instance.elapsed = localTime;
+  syncPreviewStateFromInstance(instance);
+  state.preview.stage.renderOnce();
+  handleTicker();
+}
+
+function zoomBy(factor) {
+  const instance = getActivePreviewInstance();
+  if (!state.preview.stage || !instance?.spine) {
+    return;
+  }
+
+  instance.zoom = state.preview.stage.zoomSpineBy(instance.spine, factor);
+  syncPreviewStateFromInstance(instance);
+  state.preview.stage.renderOnce();
+  const zoomValue = document.querySelector('[data-zoom-value]');
+  if (zoomValue) {
+    zoomValue.textContent = `${Math.round(instance.zoom * 100)}%`;
+  }
+}
+
+function resetZoom() {
+  const instance = getActivePreviewInstance();
+  if (!state.preview.stage || !instance?.spine) {
+    return;
+  }
+
+  state.preview.stage.resetSpineTransform(instance.spine);
+  instance.zoom = 1;
+  syncPreviewStateFromInstance(instance);
+  state.preview.stage.renderOnce();
+  const zoomValue = document.querySelector('[data-zoom-value]');
+  if (zoomValue) {
+    zoomValue.textContent = '100%';
+  }
+}
+
+function bindPanEvents() {
+  const drag = {
+    active: false,
+    pointerId: null,
+    lastX: 0,
+    lastY: 0,
+    moved: false,
+    target: null,
+    instanceId: '',
+  };
+
+  app.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    const surface = event.target.closest('[data-preview-viewport], [data-preview-modal-viewport]');
+    if (!surface || !state.preview.stage || state.preview.isLoading) {
+      return;
+    }
+
+    const hitSpine = state.preview.stage.hitTest(event.clientX, event.clientY);
+    const instance = getPreviewInstanceBySpine(hitSpine);
+    if (!instance) {
+      return;
+    }
+
+    setActivePreviewInstance(instance.id);
+    render();
+
+    drag.active = true;
+    drag.pointerId = event.pointerId;
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
+    drag.moved = false;
+    drag.target = surface;
+    drag.instanceId = instance.id;
+    surface.classList.add('is-panning');
+  });
+
+  window.addEventListener('pointermove', (event) => {
+    if (!drag.active || event.pointerId !== drag.pointerId || !state.preview.stage) {
+      return;
+    }
+
+    const instance = getPreviewInstanceById(drag.instanceId);
+    if (!instance?.spine) {
+      return;
+    }
+
+    const deltaX = event.clientX - drag.lastX;
+    const deltaY = event.clientY - drag.lastY;
+    if (!drag.moved && Math.hypot(deltaX, deltaY) < 2) {
+      return;
+    }
+
+    drag.moved = true;
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
+    state.preview.stage.moveSpineBy(instance.spine, deltaX, deltaY);
+    state.preview.stage.renderOnce();
+  });
+
+  const endPan = (event) => {
+    if (!drag.active || (event.pointerId !== undefined && event.pointerId !== drag.pointerId)) {
+      return;
+    }
+    drag.active = false;
+    drag.pointerId = null;
+    drag.target?.classList.remove('is-panning');
+    drag.target = null;
+    drag.instanceId = '';
+  };
+
+  window.addEventListener('pointerup', endPan);
+  window.addEventListener('pointercancel', endPan);
+
+  app.addEventListener('dblclick', (event) => {
+    const surface = event.target.closest('[data-preview-viewport], [data-preview-modal-viewport]');
+    const instance = getActivePreviewInstance();
+    if (!surface || !state.preview.stage || !instance?.spine) {
+      return;
+    }
+    state.preview.stage.resetSpineTransform(instance.spine);
+    instance.zoom = 1;
+    syncPreviewStateFromInstance(instance);
+    state.preview.stage.renderOnce();
+    render();
+  });
+}
+
+function bindEvents() {
+  bindPanEvents();
+
+  app.addEventListener('click', async (event) => {
+    const action = event.target.closest('[data-action]')?.dataset.action;
+    if (!action) {
+      return;
+    }
+
+    if (action === 'select-folder') {
+      await handleSelectFolder();
+    } else if (action === 'open-export-workspace') {
+      syncDefaultExportOutputDir();
+      setUiMode('export');
+    } else if (action === 'back-to-preview') {
+      setUiMode('preview');
+    } else if (action === 'select-export-folder') {
+      await handleSelectExportFolder();
+    } else if (action === 'export-png-batch') {
+      await handleBatchExportPng();
+    } else if (SOUND_FEATURE_ENABLED && action === 'select-sound-folder') {
+      await handleSelectSoundFolder();
+    } else if (action === 'scan-folder') {
+      await handleScanFolder();
+    } else if (SOUND_FEATURE_ENABLED && action === 'scan-sound-folder') {
+      await handleScanSoundFolder();
+    } else if (action === 'toggle-animation-list') {
+      toggleAnimationList();
+    } else if (action === 'select-animation-item') {
+      const animationName = event.target.closest('[data-animation-name]')?.dataset.animationName ?? '';
+      handleAnimationChange(animationName);
+    } else if (action === 'prev-file') {
+      setCurrentIndex(state.currentIndex - 1);
+    } else if (action === 'next-file') {
+      setCurrentIndex(state.currentIndex + 1);
+    } else if (action === 'toggle-pause') {
+      togglePause();
+    } else if (action === 'restart-animation') {
+      restartAnimation();
+    } else if (action === 'toggle-loop') {
+      toggleLoop();
+    } else if (action === 'zoom-in') {
+      zoomBy(ZOOM_STEP);
+    } else if (action === 'zoom-out') {
+      zoomBy(1 / ZOOM_STEP);
+    } else if (action === 'zoom-reset') {
+      resetZoom();
+    } else if (action === 'set-background') {
+      const background = event.target.closest('[data-background]')?.dataset.background;
+      if (background) {
+        setBackground(background);
+      }
+    } else if (action === 'play-sequence') {
+      playSequence();
+    } else if (action === 'clear-sequence') {
+      clearSequence();
+    } else if (action === 'toggle-theme') {
+      setTheme(state.theme === 'dark' ? 'light' : 'dark');
+    } else if (action === 'toggle-expanded-preview') {
+      toggleExpandedPreview();
+    } else if (action === 'close-expanded-preview') {
+      toggleExpandedPreview(false);
+    } else if (action === 'add-sequence-current') {
+      addToSequence(state.preview.currentAnimation);
+    } else if (action === 'remove-sequence-item') {
+      removeFromSequence(Number(event.target.closest('[data-sequence-index]')?.dataset.sequenceIndex));
+    } else if (action === 'select-file-chip') {
+      const fileId = event.target.closest('[data-file-id]')?.dataset.fileId ?? '';
+      if (fileId) {
+        setCurrentFileById(fileId);
+        if (!getActivePreviewInstance()) {
+          await addPreviewInstance(fileId);
+        }
+      }
+    } else if (action === 'toggle-export-file') {
+      const fileId = event.target.closest('[data-file-id]')?.dataset.fileId ?? '';
+      if (fileId) {
+        toggleExportFileSelection(fileId);
+        render();
+      }
+    } else if (action === 'select-all-export-files') {
+      setExportSelection(state.files.map((file) => file.id));
+      render();
+    } else if (action === 'clear-export-files') {
+      setExportSelection([]);
+      render();
+    } else if (action === 'remove-preview-instance') {
+      const instanceId = event.target.closest('[data-preview-instance-id]')?.dataset.previewInstanceId ?? '';
+      if (instanceId) {
+        removePreviewInstance(instanceId);
+      }
+    } else if (action === 'focus-preview-instance') {
+      const instanceId = event.target.closest('[data-preview-instance-id]')?.dataset.previewInstanceId ?? '';
+      if (instanceId) {
+        setActivePreviewInstance(instanceId);
+        render();
+      }
+    }
+  });
+
+  app.addEventListener('dragstart', (event) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+
+    const chip = event.target.closest('[data-file-id].spine-chip');
+    if (!(chip instanceof HTMLElement) || !event.dataTransfer) {
+      return;
+    }
+
+    const fileId = chip.dataset.fileId ?? '';
+    if (!fileId) {
+      return;
+    }
+
+    state.draggingFileId = fileId;
+    event.dataTransfer.effectAllowed = 'copy';
+    event.dataTransfer.setData('text/plain', fileId);
+    app.classList.add('is-dragging-spine');
+  });
+
+  app.addEventListener('dragend', () => {
+    state.draggingFileId = '';
+    app.classList.remove('is-dragging-spine');
+    document.querySelectorAll('[data-preview-dropzone]').forEach((node) => {
+      node.classList.remove('is-drop-target');
+    });
+  });
+
+  app.addEventListener('dragover', (event) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+
+    const dropzone = event.target.closest('[data-preview-dropzone]');
+    if (!dropzone || !state.draggingFileId) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    dropzone.classList.add('is-drop-target');
+  });
+
+  app.addEventListener('dragleave', (event) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+
+    const dropzone = event.target.closest('[data-preview-dropzone]');
+    if (!dropzone) {
+      return;
+    }
+
+    if (!dropzone.contains(event.relatedTarget)) {
+      dropzone.classList.remove('is-drop-target');
+    }
+  });
+
+  app.addEventListener('drop', async (event) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+
+    const dropzone = event.target.closest('[data-preview-dropzone]');
+    if (!dropzone) {
+      return;
+    }
+
+    event.preventDefault();
+    dropzone.classList.remove('is-drop-target');
+    app.classList.remove('is-dragging-spine');
+    const fileId = event.dataTransfer?.getData('text/plain') || state.draggingFileId;
+    state.draggingFileId = '';
+    if (fileId) {
+      const point = state.preview.stage?.clientToCanvasPoint(event.clientX, event.clientY);
+      await addPreviewInstance(fileId, { point });
+    }
+  });
+
+  app.addEventListener('input', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    if (target.matches('[data-folder-input]')) {
+      updateFolder(target.value);
+    } else if (target.matches('[data-file-search]')) {
+      state.fileSearch = target.value;
+      maybeSelectFileFromSearch();
+    } else if (target.matches('[data-export-anchor-x]')) {
+      state.export.anchorX = target.value;
+    } else if (target.matches('[data-export-anchor-y]')) {
+      state.export.anchorY = target.value;
+    } else if (target.matches('[data-export-folder-input]')) {
+      state.export.outputDir = target.value;
+    } else if (target.matches('[data-speed-range]')) {
+      setSpeed(target.value);
+    } else if (SOUND_FEATURE_ENABLED && target.matches('[data-sound-offset-range]')) {
+      setSoundOffset(target.value);
+    } else if (target.matches('[data-background-custom]')) {
+      setBackgroundLive(target.value);
+    } else if (target.matches('[data-progress]')) {
+      seekAnimation(target.value);
+    } else if (target.matches('[data-sequence-loop-last]')) {
+      state.preview.sequenceLoopLast = target.checked;
+      const instance = getActivePreviewInstance();
+      if (instance) {
+        instance.sequenceLoopLast = target.checked;
+      }
+      render();
+    } else if (SOUND_FEATURE_ENABLED && target.matches('[data-play-with-sound]')) {
+      state.preview.playWithSound = target.checked;
+      render();
+    }
+  });
+
+  app.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    if (target.matches('[data-file-search]')) {
+      commitFileSearch(target.value);
+    } else if (target.matches('[data-animation-select]')) {
+      handleAnimationChange(target.value);
+    } else if (target.matches('[data-skin-select]')) {
+      handleSkinChange(target.value);
+    } else if (SOUND_FEATURE_ENABLED && target.matches('[data-sound-select]')) {
+      setSelectedSound(target.value);
+    }
+  });
+
+  app.addEventListener('blur', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) {
+      return;
+    }
+
+    if (target.matches('[data-file-search]')) {
+      commitFileSearch(target.value);
+    }
+  }, true);
+
+  app.addEventListener('keydown', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) {
+      return;
+    }
+
+    if (!target.matches('[data-file-search]')) {
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      event.stopPropagation();
+      commitFileSearch(target.value);
+    }
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && state.preview.expanded) {
+      event.preventDefault();
+      toggleExpandedPreview(false);
+      return;
+    }
+
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) {
+      return;
+    }
+
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setCurrentIndex(state.currentIndex - 1);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setCurrentIndex(state.currentIndex + 1);
+    } else if (event.code === 'Space') {
+      event.preventDefault();
+      togglePause();
+    } else if (event.key.toLowerCase() === 'r') {
+      event.preventDefault();
+      restartAnimation();
+    } else if (event.key.toLowerCase() === 'l') {
+      event.preventDefault();
+      toggleLoop();
+    }
+  });
+}
+
+function backgroundPickerMarkup() {
+  const isCustom = !BACKGROUND_PRESETS.some((preset) => preset.id === state.background);
+  const customColor = isCustom ? state.background : '#101418';
+  const swatches = BACKGROUND_PRESETS.map((preset) => {
+    const active = state.background === preset.id ? 'active' : '';
+    return `
+      <button
+        type="button"
+        class="bg-swatch ${active}"
+        data-action="set-background"
+        data-background="${escapeHtml(preset.id)}"
+        aria-label="${escapeHtml(preset.label)}"
+        style="--swatch:${preset.swatch}"
+      ></button>
+    `;
+  }).join('');
+
+  return `
+    <div class="bg-controls">
+      <span>Background</span>
+      <div class="bg-swatch-row">
+        ${swatches}
+        <label class="bg-swatch bg-swatch-custom ${isCustom ? 'active' : ''}" style="--swatch:${escapeHtml(customColor)}">
+          <input type="color" data-background-custom value="${escapeHtml(customColor)}">
+        </label>
+      </div>
+    </div>
+  `;
+}
+
+function previewPanelMarkup() {
+  const activeInstance = getActivePreviewInstance();
+  const activeFile = getPreviewFile(activeInstance);
+  const hasFiles = Boolean(activeInstance && activeFile);
+  const instanceCounts = new Map();
+  const previewStackMarkup = state.preview.instances
+    .map((instance) => {
+      const file = getPreviewFile(instance);
+      if (!file) {
+        return '';
+      }
+
+      const nextCount = (instanceCounts.get(file.id) ?? 0) + 1;
+      instanceCounts.set(file.id, nextCount);
+      const label = `${spineDisplayName(file)}${nextCount > 1 ? ` #${nextCount}` : ''}`;
+      const isActive = instance.id === activeInstance?.id;
+
+      return `
+        <div class="preview-stack-chip ${isActive ? 'active' : ''}" data-preview-instance-id="${escapeHtml(instance.id)}">
+          <button
+            type="button"
+            class="preview-stack-name"
+            data-action="focus-preview-instance"
+          >
+            ${escapeHtml(label)}
+          </button>
+          ${isActive
+            ? '<span class="preview-stack-badge">Active</span>'
+            : `
+              <button
+                type="button"
+                class="preview-stack-remove"
+                data-action="remove-preview-instance"
+                aria-label="Remove ${escapeHtml(label)}"
+              >
+                <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="M5 5l10 10M15 5L5 15" />
+                </svg>
+              </button>
+            `}
+        </div>
+      `;
+    })
+    .join('');
+  const currentSound = SOUND_FEATURE_ENABLED ? getCurrentSoundFile() : null;
+  const previewError = state.preview.error
+    ? `<div class="panel-error">${escapeHtml(state.preview.error)}</div>`
+    : '';
+  const optionsAnimation = activeFile
+    ? activeFile.animations
+        .map(
+          (name) =>
+            `<option value="${escapeHtml(name)}" ${name === state.preview.currentAnimation ? 'selected' : ''}>${escapeHtml(name)}</option>`,
+        )
+        .join('')
+    : '';
+  const optionsSkin = activeFile
+    ? activeFile.skins
+        .map(
+          (name) =>
+            `<option value="${escapeHtml(name)}" ${name === state.preview.currentSkin ? 'selected' : ''}>${escapeHtml(name)}</option>`,
+        )
+        .join('')
+    : '';
+  const optionsSound = SOUND_FEATURE_ENABLED
+    ? state.soundFiles
+        .map(
+          (sound) =>
+            `<option value="${escapeHtml(sound.id)}" ${sound.id === currentSound?.id ? 'selected' : ''}>${escapeHtml(sound.relativeName)}</option>`,
+        )
+        .join('')
+    : '';
+  const sequenceItems = state.preview.sequence
+    .map(
+      (name, index) => `
+        <div class="sequence-item">
+          <span>${escapeHtml(name)}</span>
+          <button
+            class="sequence-remove"
+            data-action="remove-sequence-item"
+            data-sequence-index="${index}"
+            type="button"
+            aria-label="Remove sequence item"
+          >
+            <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M5 5l10 10M15 5L5 15" />
+            </svg>
+          </button>
+        </div>
+      `,
+    )
+    .join('');
+  const animationOverlayItems = activeFile
+    ? activeFile.animations
+        .map((name) => {
+          const duration = state.preview.spine ? SpineStage.animationDuration(state.preview.spine, name) : 0;
+          return `
+            <button
+              class="animation-list-item ${name === state.preview.currentAnimation ? 'active' : ''}"
+              data-action="select-animation-item"
+              data-animation-name="${escapeHtml(name)}"
+              type="button"
+            >
+              <span>${escapeHtml(name)}</span>
+              <strong>${formatAnimationDuration(duration)}</strong>
+            </button>
+          `;
+        })
+        .join('')
+    : '';
+  const animationOverlay = hasFiles
+    ? `
+        <div class="animation-overlay ${state.preview.animationListOpen ? 'open' : ''}">
+          <button
+            class="animation-overlay-toggle"
+            data-action="toggle-animation-list"
+            type="button"
+            aria-expanded="${state.preview.animationListOpen ? 'true' : 'false'}"
+          >
+            <span>Anim List</span>
+            <strong>${activeFile.animations.length}</strong>
+          </button>
+          <div class="animation-overlay-panel">
+            <div class="animation-overlay-list">
+              ${animationOverlayItems || '<p class="animation-list-empty">Chưa có animation.</p>'}
+            </div>
+          </div>
+        </div>
+      `
+    : '';
+  const controlsMarkup = hasFiles
+    ? `
+        <div class="button-row">
+          <button
+            class="secondary-btn control-btn playback-icon-btn"
+            data-action="toggle-pause"
+            ${hasFiles ? '' : 'disabled'}
+            aria-label="${state.preview.paused || hasReachedAnimationEnd() ? 'Play' : 'Pause'}"
+          >
+            ${playbackToggleIconMarkup()}
+          </button>
+          <button
+            class="secondary-btn control-btn playback-icon-btn"
+            data-action="restart-animation"
+            ${hasFiles ? '' : 'disabled'}
+            aria-label="Restart"
+          >
+            <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5.5 12a6.5 6.5 0 1 1 1.9 4.6" />
+              <path d="M5 7.5V12h4.5" />
+            </svg>
+          </button>
+          <button
+            class="secondary-btn control-btn playback-icon-btn ${state.preview.loop ? 'active' : ''}"
+            data-action="toggle-loop"
+            ${hasFiles ? '' : 'disabled'}
+            aria-label="Loop"
+          >
+            <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 9a4 4 0 0 1 4-4h11" />
+              <path d="M16 2l3 3-3 3" />
+              <path d="M20 15a4 4 0 0 1-4 4H5" />
+              <path d="M8 22l-3-3 3-3" />
+            </svg>
+          </button>
+        </div>
+
+        <label class="field">
+          <span>Animation</span>
+          <select data-animation-select ${hasFiles ? '' : 'disabled'}>${optionsAnimation}</select>
+        </label>
+
+        <label class="field">
+          <span>Skin</span>
+          <select data-skin-select ${hasFiles && activeFile.skins.length ? '' : 'disabled'}>${optionsSkin}</select>
+        </label>
+
+        ${SOUND_FEATURE_ENABLED && state.soundFiles.length
+          ? `
+            <label class="field">
+              <span>Sound</span>
+              <select data-sound-select>${optionsSound}</select>
+            </label>
+
+            <label class="field checkbox-field">
+              <span class="field-header">
+                <span>Play with sound</span>
+                <input type="checkbox" data-play-with-sound ${state.preview.playWithSound ? 'checked' : ''}>
+              </span>
+            </label>
+
+            <label class="field">
+              <span class="field-header">
+                <span>Sound offset</span>
+                <strong data-sound-offset-value>${formatSoundOffset(state.preview.soundOffsetMs)}</strong>
+              </span>
+              <input data-sound-offset-range type="range" min="0" max="2" step="0.1" value="${state.preview.soundOffsetMs / 1000}">
+            </label>
+          `
+          : ''}
+
+        <label class="field">
+          <span class="field-header">
+            <span>Speed</span>
+            <strong data-speed-value>${state.preview.speed.toFixed(2)}x</strong>
+          </span>
+          <input data-speed-range type="range" min="0.5" max="2" step="0.1" value="${state.preview.speed}" ${hasFiles ? '' : 'disabled'}>
+        </label>
+
+        <div class="zoom-controls">
+          <span>Zoom <strong data-zoom-value>${Math.round((state.preview.zoom || 1) * 100)}%</strong></span>
+          <div class="button-row zoom-button-row">
+            <button class="secondary-btn control-btn" data-action="zoom-out" ${hasFiles ? '' : 'disabled'}>-</button>
+            <button class="secondary-btn control-btn" data-action="zoom-reset" ${hasFiles ? '' : 'disabled'}>Reset</button>
+            <button class="secondary-btn control-btn" data-action="zoom-in" ${hasFiles ? '' : 'disabled'}>+</button>
+          </div>
+        </div>
+
+        ${backgroundPickerMarkup()}
+
+        <div class="hint-list">
+          <p><kbd>Left</kbd>/<kbd>Right</kbd> đổi file</p>
+          <p><kbd>Space</kbd> play or pause</p>
+          <p><kbd>R</kbd> restart</p>
+          <p><kbd>L</kbd> toggle loop</p>
+          <p><kbd>Click</kbd> chọn spine, <kbd>Drag</kbd> kéo vị trí</p>
+          <p><kbd>Double-click</kbd> reset spine đang chọn</p>
+        </div>
+
+        <div class="sequence-panel">
+          <div class="sequence-header">
+            <span>Sequence</span>
+            <span>${state.preview.sequence.length} items</span>
+          </div>
+          <div class="button-row">
+            <button class="secondary-btn control-btn" data-action="add-sequence-current" ${hasFiles && state.preview.currentAnimation ? '' : 'disabled'}>Add Anim</button>
+            <button class="secondary-btn control-btn sequence-play-btn" data-action="play-sequence" ${state.preview.sequence.length ? '' : 'disabled'}>Play Seq</button>
+            <button class="secondary-btn control-btn" data-action="clear-sequence" ${state.preview.sequence.length ? '' : 'disabled'}>Clear</button>
+          </div>
+          <label class="sequence-loop">
+            <input type="checkbox" data-sequence-loop-last ${state.preview.sequenceLoopLast ? 'checked' : ''}>
+            <span>Loop last animation</span>
+          </label>
+          <div class="sequence-list">
+            ${sequenceItems || '<p class="sequence-empty">Chưa có animation nào trong sequence.</p>'}
+          </div>
+        </div>
+      `
+    : `
+        <div class="controls-placeholder">
+          <div class="controls-placeholder-copy">
+            <p>Select a Spine file to enable controls.</p>
+          </div>
+          <div class="placeholder-block placeholder-block-lg"></div>
+          <div class="placeholder-row">
+            <div class="placeholder-pill"></div>
+            <div class="placeholder-pill"></div>
+            <div class="placeholder-pill"></div>
+          </div>
+          <div class="placeholder-block"></div>
+          <div class="placeholder-block"></div>
+          <div class="placeholder-block"></div>
+          <div class="placeholder-divider"></div>
+          <div class="placeholder-row placeholder-row-wide">
+            <div class="placeholder-pill"></div>
+            <div class="placeholder-pill"></div>
+          </div>
+          <div class="placeholder-list">
+            <div class="placeholder-line"></div>
+            <div class="placeholder-line"></div>
+            <div class="placeholder-line short"></div>
+          </div>
+        </div>
+      `;
+
+  return `
+    <section class="preview-grid">
+      <div class="preview-card">
+        <div class="card-header preview-header">
+          <div class="preview-title-row">
+            <button
+              class="secondary-btn icon-btn"
+              data-action="toggle-expanded-preview"
+              ${hasFiles ? '' : 'disabled'}
+              aria-label="${state.preview.expanded ? 'Collapse preview' : 'Expand preview'}"
+            >
+              <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M7 3H3v4M13 3h4v4M17 13v4h-4M7 17H3v-4" />
+                <path d="M8 4H4v4M12 4h4v4M16 12v4h-4M8 16H4v-4" opacity="0" />
+              </svg>
+            </button>
+            <div class="preview-file">
+              <h2>${hasFiles ? escapeHtml(activeFile.fileName) : 'No spine selected'}</h2>
+            </div>
+          </div>
+          <div class="preview-nav">
+            <button
+              class="secondary-btn icon-btn nav-icon-btn"
+              data-action="prev-file"
+              ${state.currentIndex <= 0 ? 'disabled' : ''}
+              aria-label="Previous file"
+            >
+              <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M12.5 4.5L7 10l5.5 5.5" />
+              </svg>
+            </button>
+            <button
+              class="secondary-btn icon-btn nav-icon-btn"
+              data-action="next-file"
+              ${state.currentIndex >= state.files.length - 1 || state.currentIndex === -1 ? 'disabled' : ''}
+              aria-label="Next file"
+            >
+              <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M7.5 4.5L13 10l-5.5 5.5" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="viewport-wrap" data-preview-bg-target data-preview-dropzone>
+          <div data-preview-viewport class="preview-viewport"></div>
+          ${state.preview.isLoading ? '<div class="overlay-message">Loading spine...</div>' : ''}
+          ${!hasFiles && !state.preview.isLoading ? '<div class="overlay-message">Chọn folder và scan để bắt đầu preview.</div>' : ''}
+          ${animationOverlay}
+        </div>
+        <div class="preview-stack-section">
+          <div class="preview-stack-header">
+            <span>Preview Stack</span>
+          </div>
+          ${previewStackMarkup
+            ? `<div class="preview-stack-list">${previewStackMarkup}</div>`
+            : '<p class="preview-stack-empty">Drag Spine buttons vào khung preview để thêm spine instances vào cùng một canvas.</p>'}
+        </div>
+        ${previewError}
+        <div class="timeline">
+          <div class="timeline-labels">
+            <span data-current-animation>${escapeHtml(state.preview.currentAnimation || 'None')}</span>
+            <span data-elapsed>${formatSeconds(state.preview.elapsed)} / ${formatSeconds(state.preview.duration)}s</span>
+          </div>
+          <div class="timeline-track">
+            <div data-progress-fill class="timeline-fill" style="width:${state.preview.duration ? (state.preview.elapsed / state.preview.duration) * 100 : 0}%"></div>
+            <input data-progress class="timeline-range" type="range" min="0" max="${state.preview.duration || 0}" step="${FRAME_STEP}" value="${snapToFrame(state.preview.elapsed)}" ${hasFiles ? '' : 'disabled'}>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-card">
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">Controls</p>
+            <h2>Playback</h2>
+          </div>
+        </div>
+        ${controlsMarkup}
+      </div>
+    </section>
+  `;
+}
+
+function expandedPreviewMarkup() {
+  if (!state.preview.expanded) {
+    return '';
+  }
+
+  const activeInstance = getActivePreviewInstance();
+  const activeFile = getPreviewFile(activeInstance);
+  const hasFiles = Boolean(activeInstance && activeFile);
+  const optionsSkin = activeFile
+    ? activeFile.skins
+        .map(
+          (name) =>
+            `<option value="${escapeHtml(name)}" ${name === state.preview.currentSkin ? 'selected' : ''}>${escapeHtml(name)}</option>`,
+        )
+        .join('')
+    : '';
+  const animationOverlayItems = activeFile
+    ? activeFile.animations
+        .map((name) => {
+          const duration = state.preview.spine ? SpineStage.animationDuration(state.preview.spine, name) : 0;
+          return `
+            <button
+              class="animation-list-item ${name === state.preview.currentAnimation ? 'active' : ''}"
+              data-action="select-animation-item"
+              data-animation-name="${escapeHtml(name)}"
+              type="button"
+            >
+              <span>${escapeHtml(name)}</span>
+              <strong>${formatAnimationDuration(duration)}</strong>
+            </button>
+          `;
+        })
+        .join('')
+    : '';
+
+  return `
+    <div class="preview-modal" data-preview-modal>
+      <div class="preview-modal-backdrop" data-action="close-expanded-preview"></div>
+      <div class="preview-modal-panel">
+        <div class="preview-modal-header">
+          <div class="preview-modal-copy">
+            <p class="eyebrow">Fullscreen Preview</p>
+            <h2>${hasFiles ? escapeHtml(activeFile.fileName) : 'No spine selected'}</h2>
+          </div>
+          <div class="preview-modal-actions">
+            ${hasFiles && activeFile.skins.length > 1
+              ? `
+                <label class="modal-field-label">
+                  <span>Skin</span>
+                  <select class="modal-skin-select" data-skin-select>
+                    ${optionsSkin}
+                  </select>
+                </label>
+              `
+              : ''}
+            <button
+              class="secondary-btn icon-btn nav-icon-btn"
+              data-action="prev-file"
+              ${state.currentIndex <= 0 ? 'disabled' : ''}
+              aria-label="Previous file"
+            >
+              <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M12.5 4.5L7 10l5.5 5.5" />
+              </svg>
+            </button>
+            <button
+              class="secondary-btn icon-btn nav-icon-btn"
+              data-action="next-file"
+              ${state.currentIndex >= state.files.length - 1 || state.currentIndex === -1 ? 'disabled' : ''}
+              aria-label="Next file"
+            >
+              <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M7.5 4.5L13 10l-5.5 5.5" />
+              </svg>
+            </button>
+            <button
+              class="secondary-btn icon-btn modal-close-btn"
+              data-action="close-expanded-preview"
+              aria-label="Close preview"
+            >
+              <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M5 5l10 10M15 5L5 15" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="preview-modal-body" data-preview-bg-target>
+          <div data-preview-modal-viewport class="preview-modal-viewport"></div>
+          ${state.preview.isLoading ? '<div class="overlay-message">Loading spine...</div>' : ''}
+          ${hasFiles
+            ? `
+              <div class="animation-overlay ${state.preview.animationListOpen ? 'open' : ''}">
+                <button
+                  class="animation-overlay-toggle"
+                  data-action="toggle-animation-list"
+                  type="button"
+                  aria-expanded="${state.preview.animationListOpen ? 'true' : 'false'}"
+                >
+                  <span>Anim List</span>
+                  <strong>${activeFile.animations.length}</strong>
+                </button>
+                <div class="animation-overlay-panel">
+                  <div class="animation-overlay-list">
+                    ${animationOverlayItems || '<p class="animation-list-empty">Chưa có animation.</p>'}
+                  </div>
+                </div>
+              </div>
+            `
+            : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function exportPanelMarkup() {
+  const hasFiles = state.files.length > 0;
+  if (!hasFiles || state.uiMode !== 'export') {
+    return '';
+  }
+
+  const exportButtons = state.files
+    .map((file) => {
+      const active = isExportFileSelected(file.id) ? 'active' : '';
+      return `
+        <button
+          type="button"
+          class="spine-chip export-chip ${active}"
+          data-action="toggle-export-file"
+          data-file-id="${escapeHtml(file.id)}"
+        >
+          ${escapeHtml(spineDisplayName(file))}
+        </button>
+      `;
+    })
+    .join('');
+
+  return `
+    <section class="export-panel-card">
+      <div class="card-header export-panel-header">
+        <div>
+          <p class="eyebrow">Export Spine</p>
+          <h2>Batch Export</h2>
+        </div>
+        <div class="export-panel-header-actions">
+          <p class="export-panel-copy">Chọn pivot của spine khi export. PNG sẽ được offset để bên runtime có thể dùng anchor chuẩn <code>0.5,0.5</code> mà vẫn giữ đúng tâm/pivot mong muốn.</p>
+          <button class="secondary-btn" data-action="back-to-preview">Back To Preview</button>
+        </div>
+      </div>
+
+      <div class="folder-row source-row export-row">
+        <input
+          data-export-folder-input
+          class="folder-input"
+          type="text"
+          placeholder="/path/to/output-folder"
+          value="${escapeHtml(state.export.outputDir)}"
+        />
+        <button class="primary-btn" data-action="select-export-folder">Browse</button>
+        <button class="primary-btn accent" data-action="export-png-batch" ${state.export.isExporting ? 'disabled' : ''}>${state.export.isExporting ? 'Exporting...' : 'Export'}</button>
+      </div>
+
+      <div class="export-toolbar">
+        <label class="field export-anchor-field">
+          <span>Spine Pivot X</span>
+          <input data-export-anchor-x class="folder-input export-anchor-input" type="number" min="0" max="1" step="0.01" value="${escapeHtml(state.export.anchorX)}" />
+        </label>
+        <label class="field export-anchor-field">
+          <span>Spine Pivot Y</span>
+          <input data-export-anchor-y class="folder-input export-anchor-input" type="number" min="0" max="1" step="0.01" value="${escapeHtml(state.export.anchorY)}" />
+        </label>
+        <div class="export-actions">
+          <button class="secondary-btn" data-action="select-all-export-files">Select All</button>
+          <button class="secondary-btn" data-action="clear-export-files" ${state.export.selectedFileIds.length ? '' : 'disabled'}>Clear</button>
+        </div>
+      </div>
+
+      <p class="navigator-result export-result">${state.export.selectedFileIds.length} files selected${state.export.lastSummary ? ` • ${escapeHtml(state.export.lastSummary)}` : ''}</p>
+      <div class="spine-chip-list export-chip-list">
+        ${exportButtons}
+      </div>
+
+      ${state.success ? `<div class="status success export-status">${escapeHtml(state.success)}</div>` : ''}
+    </section>
+  `;
+}
+
+function render() {
+  const current = getCurrentFile();
+  const activeInstance = getActivePreviewInstance();
+  const activeFile = getPreviewFile(activeInstance);
+  const hasFiles = state.files.length > 0;
+  syncExportSelection();
+  const autocompleteOptions = state.files
+    .map(
+      (file) =>
+        `<option value="${escapeHtml(file.relativeName)}"></option>`,
+    )
+    .join('');
+  const spineButtons = hasFiles
+    ? state.files
+        .map((file) => {
+          const active = current?.id === file.id ? 'active' : '';
+          return `
+            <button
+              type="button"
+              class="spine-chip ${active}"
+              data-action="select-file-chip"
+              data-file-id="${escapeHtml(file.id)}"
+              draggable="true"
+            >
+              ${escapeHtml(spineDisplayName(file))}
+            </button>
+          `;
+        })
+        .join('')
+    : '';
+  const searchPlaceholder = hasFiles && current
+    ? `Search another spine... Current source: ${current.fileName}`
+    : 'Search scanned files...';
+
+  app.innerHTML = `
+    <div class="shell theme-${state.theme} ${state.loading ? 'is-loading' : ''} ${state.readyAnimating ? 'is-ready' : ''} mode-${state.uiMode}" style="--preview-image:url('${previewBackgroundUrl}')">
+      <div class="loading-screen ${state.loading ? '' : 'hidden'}" aria-hidden="${state.loading ? 'false' : 'true'}">
+        <div class="loading-splash">
+          <div class="loading-orbital" aria-hidden="true">
+            <div class="loading-orbital-grid"></div>
+            <div class="loading-orbital-ring loading-orbital-ring-outer"></div>
+            <div class="loading-orbital-ring loading-orbital-ring-middle"></div>
+            <div class="loading-orbital-core">
+              <div class="loading-core-cut loading-core-cut-a"></div>
+              <div class="loading-core-cut loading-core-cut-b"></div>
+            </div>
+            <div class="loading-orbital-shard loading-orbital-shard-a"></div>
+            <div class="loading-orbital-shard loading-orbital-shard-b"></div>
+            <div class="loading-orbital-shard loading-orbital-shard-c"></div>
+            <div class="loading-orbital-beam"></div>
+            <div class="loading-orbital-noise">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+          </div>
+          <div class="loading-copy">
+            <p class="loading-kicker">Spine Preview Workspace</p>
+            <h1>Preparing your animation stage</h1>
+            <p>Optimizing viewport, control surface, and export tools.</p>
+          </div>
+          <div class="loading-progress" aria-hidden="true">
+            <div class="loading-progress-bar"></div>
+          </div>
+        </div>
+      </div>
+
+      <main class="main-layout">
+        ${state.uiMode === 'preview'
+          ? `
+            <section class="hero-card">
+          <div class="hero-header">
+            <div>
+              <p class="eyebrow app-title">Animation Preview App</p>
+              <p class="hero-copy">Chọn folder animation, scan toàn bộ spine files.</p>
+            </div>
+            <button
+              class="secondary-btn theme-btn"
+              data-action="toggle-theme"
+              aria-label="${state.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}"
+            >
+              <span class="theme-icon-wrap ${state.theme === 'dark' ? 'is-dark' : 'is-light'}" aria-hidden="true">
+                <svg class="theme-icon theme-icon-sun" viewBox="0 0 20 20">
+                  <circle cx="10" cy="10" r="3.2" />
+                  <path d="M10 1.8v2.4M10 15.8v2.4M18.2 10h-2.4M4.2 10H1.8M15.9 4.1l-1.7 1.7M5.8 14.2l-1.7 1.7M15.9 15.9l-1.7-1.7M5.8 5.8L4.1 4.1" />
+                </svg>
+                <svg class="theme-icon theme-icon-moon" viewBox="0 0 20 20">
+                  <path d="M13.8 2.9a6.9 6.9 0 1 0 3.3 12.9A7.8 7.8 0 0 1 13.8 2.9Z" />
+                </svg>
+              </span>
+            </button>
+          </div>
+
+          <div class="folder-row source-toolbar">
+            <input
+              data-folder-input
+              class="folder-input"
+              type="text"
+              placeholder="/path/to/animation-folder"
+              value="${escapeHtml(state.folderPath)}"
+            />
+            <button class="primary-btn" data-action="select-folder">Browse</button>
+            <button class="primary-btn accent" data-action="scan-folder" ${state.scanning ? 'disabled' : ''}>${state.scanning ? 'Scanning...' : 'Scan'}</button>
+            <button class="secondary-btn export-entry-btn" data-action="open-export-workspace" ${hasFiles ? '' : 'disabled'}>Export Spine</button>
+          </div>
+          ${hasFiles
+            ? `<p class="navigator-result source-result">${state.files.length} spine files scanned.</p>`
+            : ''}
+
+          ${SOUND_FEATURE_ENABLED
+            ? `
+              <div class="source-grid">
+                <div class="source-card">
+                  <div class="source-card-copy">
+                    <p class="eyebrow">Sound Source</p>
+                    <p class="source-copy">Chọn folder sound để ghép playback theo file hoặc animation hiện tại.</p>
+                  </div>
+                  <div class="folder-row source-row">
+                    <input
+                      class="folder-input"
+                      type="text"
+                      placeholder="/path/to/sound-folder"
+                      value="${escapeHtml(state.soundFolderPath)}"
+                      readonly
+                    />
+                    <button class="primary-btn" data-action="select-sound-folder">Browse</button>
+                    <button class="primary-btn accent" data-action="scan-sound-folder" ${state.soundScanning ? 'disabled' : ''}>${state.soundScanning ? 'Scanning...' : 'Scan'}</button>
+                  </div>
+                  ${state.soundFolderPath
+                    ? `<p class="navigator-result">${state.soundFiles.length} sound files scanned.</p>`
+                    : ''}
+                </div>
+              </div>
+              `
+            : ''}
+
+          <div class="hero-search-row">
+            <div class="search-input-wrap">
+              <input
+                data-file-search
+                class="navigator-search"
+                type="text"
+                list="file-search-suggestions"
+                placeholder="${escapeHtml(searchPlaceholder)}"
+                value="${escapeHtml(state.fileSearch)}"
+                ${hasFiles ? '' : 'disabled'}
+              />
+            </div>
+            <datalist id="file-search-suggestions">
+              ${autocompleteOptions}
+            </datalist>
+            <div class="header-meta hero-meta">
+              <span>${hasFiles ? `${state.currentIndex + 1} / ${state.files.length}` : '0 / 0'}</span>
+            </div>
+          </div>
+
+          ${hasFiles
+            ? `
+              <div class="spine-chip-list">
+                ${spineButtons}
+              </div>
+            `
+            : ''}
+
+          ${state.error ? `<div class="status error">${escapeHtml(state.error)}</div>` : ''}
+            </section>
+          `
+          : ''}
+
+        ${state.uiMode === 'preview' ? previewPanelMarkup() : ''}
+        ${exportPanelMarkup()}
+
+        <footer class="app-footer">
+          <p>Prompted by TiTi</p>
+        </footer>
+      </main>
+
+      ${expandedPreviewMarkup()}
+    </div>
+  `;
+
+  attachStageView();
+  observePreviewViewport();
+  applyPreviewBackground();
+  schedulePreviewResize();
+}
+
+function initialize() {
+  state.folderPath = localStorage.getItem('spine-preview-folder') || '';
+  state.soundFolderPath = SOUND_FEATURE_ENABLED
+    ? (localStorage.getItem('spine-preview-sound-folder') || '')
+    : '';
+  state.theme = localStorage.getItem('spine-preview-theme') === 'light' ? 'light' : 'dark';
+  state.background = localStorage.getItem('spine-preview-background') || 'scene';
+  if (!SOUND_FEATURE_ENABLED) {
+    state.soundFiles = [];
+    state.soundScanning = false;
+    resetPreviewSoundState();
+  }
+  render();
+  bindEvents();
+  window.addEventListener('resize', schedulePreviewResize);
+
+  window.setTimeout(() => {
+    state.loading = false;
+    state.readyAnimating = true;
+    render();
+    window.setTimeout(() => {
+      state.readyAnimating = false;
+      render();
+    }, READY_FADE_DURATION_MS);
+  }, LOADING_SCREEN_MAX_DURATION_MS);
+}
+
+initialize();

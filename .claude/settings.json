@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"console.log\\(require\\('./node_modules/@electron/packager/package.json'\\).version\\)\")",
+      "Bash(rm -rf out-test; node -e \" *)",
+      "Bash(curl -sSL -o /dev/null -w \"HTTP %{http_code} in %{time_total}s\\\\n\" --max-time 20 https://github.com/electron/electron/releases/download/v42.3.3/SHASUMS256.txt)",
+      "Bash(echo \"CURL FAILED rc=$?\")",
+      "Bash(node -e ' *)",
+      "Bash(command -v nvm)",
+      "Bash([ -s \"$HOME/.nvm/nvm.sh\" ])",
+      "Read(//Users/fe-tienhuynh/.nvm/versions/**)",
+      "Bash(command -v fnm)",
+      "Read(//opt/homebrew/opt/node@20/bin/**)",
+      "Bash(command -v brew)",
+      "Bash(brew --version)",
+      "Read(//opt/homebrew/opt/node@22/bin/**)",
+      "Bash(command -v volta)",
+      "Bash(brew install *)",
+      "Bash(sips -g pixelWidth -g pixelHeight assets/icon.png)",
+      "Bash(command -v iconutil sips)",
+      "Bash(command -v iconutil)",
+      "Bash(command -v sips)",
+      "Bash(command -v magick convert png2ico icotool)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}
