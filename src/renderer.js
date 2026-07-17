@@ -1058,6 +1058,23 @@ function removePreviewInstance(instanceId) {
   render();
 }
 
+function clearAllPreviewInstances() {
+  if (!state.preview.instances.length) {
+    return;
+  }
+
+  state.preview.instances.forEach((instance) => {
+    instance.sequenceCleanup?.();
+    state.preview.stage?.removeSpine(instance.spine);
+  });
+
+  stopCurrentSound();
+  state.preview.instances = [];
+  resetActivePreviewState();
+  state.preview.stage?.renderOnce();
+  render();
+}
+
 function handleTicker() {
   const activeInstance = getActivePreviewInstance();
   if (!activeInstance?.spine) {
@@ -1564,6 +1581,8 @@ function bindEvents() {
       if (instanceId) {
         removePreviewInstance(instanceId);
       }
+    } else if (action === 'clear-all-preview-instances') {
+      clearAllPreviewInstances();
     } else if (action === 'focus-preview-instance') {
       const instanceId = event.target.closest('[data-preview-instance-id]')?.dataset.previewInstanceId ?? '';
       if (instanceId) {
@@ -2123,6 +2142,14 @@ function previewPanelMarkup() {
         <div class="preview-stack-section">
           <div class="preview-stack-header">
             <span>Preview Stack</span>
+            <button
+              type="button"
+              class="secondary-btn preview-stack-clear-btn"
+              data-action="clear-all-preview-instances"
+              ${state.preview.instances.length ? '' : 'disabled'}
+            >
+              Clear All
+            </button>
           </div>
           ${previewStackMarkup
             ? `<div class="preview-stack-list">${previewStackMarkup}</div>`

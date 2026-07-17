@@ -1324,6 +1324,18 @@ select:disabled {
   background: rgba(91, 140, 255, 0.2);
 }
 
+.preview-stack-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.preview-stack-clear-btn {
+  min-width: auto;
+  padding: 10px 14px;
+}
+
 .header-meta {
   gap: 10px;
   flex-wrap: wrap;
