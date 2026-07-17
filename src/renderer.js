@@ -1473,19 +1473,6 @@ function bindPanEvents() {
 
   window.addEventListener('pointerup', endPan);
   window.addEventListener('pointercancel', endPan);
-
-  app.addEventListener('dblclick', (event) => {
-    const surface = event.target.closest('[data-preview-viewport], [data-preview-modal-viewport]');
-    const instance = getActivePreviewInstance();
-    if (!surface || !state.preview.stage || !instance?.spine) {
-      return;
-    }
-    state.preview.stage.resetSpineTransform(instance.spine);
-    instance.zoom = 1;
-    syncPreviewStateFromInstance(instance);
-    state.preview.stage.renderOnce();
-    render();
-  });
 }
 
 function bindEvents() {
@@ -1519,10 +1506,6 @@ function bindEvents() {
     } else if (action === 'select-animation-item') {
       const animationName = event.target.closest('[data-animation-name]')?.dataset.animationName ?? '';
       handleAnimationChange(animationName);
-    } else if (action === 'prev-file') {
-      setCurrentIndex(state.currentIndex - 1);
-    } else if (action === 'next-file') {
-      setCurrentIndex(state.currentIndex + 1);
     } else if (action === 'toggle-pause') {
       togglePause();
     } else if (action === 'restart-animation') {
@@ -1764,13 +1747,7 @@ function bindEvents() {
       return;
     }
 
-    if (event.key === 'ArrowLeft') {
-      event.preventDefault();
-      setCurrentIndex(state.currentIndex - 1);
-    } else if (event.key === 'ArrowRight') {
-      event.preventDefault();
-      setCurrentIndex(state.currentIndex + 1);
-    } else if (event.code === 'Space') {
+    if (event.code === 'Space') {
       event.preventDefault();
       togglePause();
     } else if (event.key.toLowerCase() === 'r') {
@@ -2034,12 +2011,10 @@ function previewPanelMarkup() {
         ${backgroundPickerMarkup()}
 
         <div class="hint-list">
-          <p><kbd>Left</kbd>/<kbd>Right</kbd> đổi file</p>
           <p><kbd>Space</kbd> play or pause</p>
           <p><kbd>R</kbd> restart</p>
           <p><kbd>L</kbd> toggle loop</p>
           <p><kbd>Click</kbd> chọn spine, <kbd>Drag</kbd> kéo vị trí</p>
-          <p><kbd>Double-click</kbd> reset spine đang chọn</p>
         </div>
 
         <div class="sequence-panel">
@@ -2107,28 +2082,6 @@ function previewPanelMarkup() {
             <div class="preview-file">
               <h2>${hasFiles ? escapeHtml(activeFile.fileName) : 'No spine selected'}</h2>
             </div>
-          </div>
-          <div class="preview-nav">
-            <button
-              class="secondary-btn icon-btn nav-icon-btn"
-              data-action="prev-file"
-              ${state.currentIndex <= 0 ? 'disabled' : ''}
-              aria-label="Previous file"
-            >
-              <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
-                <path d="M12.5 4.5L7 10l5.5 5.5" />
-              </svg>
-            </button>
-            <button
-              class="secondary-btn icon-btn nav-icon-btn"
-              data-action="next-file"
-              ${state.currentIndex >= state.files.length - 1 || state.currentIndex === -1 ? 'disabled' : ''}
-              aria-label="Next file"
-            >
-              <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
-                <path d="M7.5 4.5L13 10l-5.5 5.5" />
-              </svg>
-            </button>
           </div>
         </div>
         <div class="viewport-wrap" data-preview-bg-target data-preview-dropzone>
@@ -2234,26 +2187,6 @@ function expandedPreviewMarkup() {
                 </label>
               `
               : ''}
-            <button
-              class="secondary-btn icon-btn nav-icon-btn"
-              data-action="prev-file"
-              ${state.currentIndex <= 0 ? 'disabled' : ''}
-              aria-label="Previous file"
-            >
-              <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
-                <path d="M12.5 4.5L7 10l5.5 5.5" />
-              </svg>
-            </button>
-            <button
-              class="secondary-btn icon-btn nav-icon-btn"
-              data-action="next-file"
-              ${state.currentIndex >= state.files.length - 1 || state.currentIndex === -1 ? 'disabled' : ''}
-              aria-label="Next file"
-            >
-              <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
-                <path d="M7.5 4.5L13 10l-5.5 5.5" />
-              </svg>
-            </button>
             <button
               class="secondary-btn icon-btn modal-close-btn"
               data-action="close-expanded-preview"
@@ -2539,6 +2472,9 @@ function render() {
               <span>${hasFiles ? `${state.currentIndex + 1} / ${state.files.length}` : '0 / 0'}</span>
             </div>
           </div>
+          ${hasFiles
+            ? `<p class="search-hint-label">Drag & drop spine vào khung bên dưới để preview</p>`
+            : ''}
 
           ${hasFiles
             ? `

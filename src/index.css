@@ -1082,6 +1082,13 @@ select:disabled {
   justify-content: flex-end;
 }
 
+.search-hint-label {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .primary-btn,
 .secondary-btn {
   min-height: 48px;
