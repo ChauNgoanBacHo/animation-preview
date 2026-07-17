@@ -1378,10 +1378,9 @@ function zoomBy(factor) {
   instance.zoom = state.preview.stage.zoomSpineBy(instance.spine, factor);
   syncPreviewStateFromInstance(instance);
   state.preview.stage.renderOnce();
-  const zoomValue = document.querySelector('[data-zoom-value]');
-  if (zoomValue) {
+  document.querySelectorAll('[data-zoom-value]').forEach((zoomValue) => {
     zoomValue.textContent = `${Math.round(instance.zoom * 100)}%`;
-  }
+  });
 }
 
 function resetZoom() {
@@ -1394,10 +1393,9 @@ function resetZoom() {
   instance.zoom = 1;
   syncPreviewStateFromInstance(instance);
   state.preview.stage.renderOnce();
-  const zoomValue = document.querySelector('[data-zoom-value]');
-  if (zoomValue) {
+  document.querySelectorAll('[data-zoom-value]').forEach((zoomValue) => {
     zoomValue.textContent = '100%';
-  }
+  });
 }
 
 function bindPanEvents() {
@@ -2270,6 +2268,18 @@ function expandedPreviewMarkup() {
         <div class="preview-modal-body" data-preview-bg-target>
           <div data-preview-modal-viewport class="preview-modal-viewport"></div>
           ${state.preview.isLoading ? '<div class="overlay-message">Loading spine...</div>' : ''}
+          ${hasFiles
+            ? `
+              <div class="preview-modal-zoom-controls">
+                <span>Zoom <strong data-zoom-value>${Math.round((state.preview.zoom || 1) * 100)}%</strong></span>
+                <div class="button-row zoom-button-row">
+                  <button class="secondary-btn control-btn" data-action="zoom-out">-</button>
+                  <button class="secondary-btn control-btn" data-action="zoom-reset">Reset</button>
+                  <button class="secondary-btn control-btn" data-action="zoom-in">+</button>
+                </div>
+              </div>
+            `
+            : ''}
           ${hasFiles
             ? `
               <div class="animation-overlay ${state.preview.animationListOpen ? 'open' : ''}">
