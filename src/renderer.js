@@ -8,6 +8,7 @@ const FRAME_STEP = 1 / 60;
 const LOADING_SCREEN_MAX_DURATION_MS = 2000;
 const READY_FADE_DURATION_MS = 320;
 const SOUND_FEATURE_ENABLED = false;
+const EXPORT_FEATURE_ENABLED = false;
 const EXPORT_PADDING_PX = 8;
 
 const CHECKER_BG =
@@ -203,6 +204,12 @@ function updateSuccess(message = '') {
 }
 
 function setUiMode(mode) {
+  if (!EXPORT_FEATURE_ENABLED) {
+    state.uiMode = 'preview';
+    render();
+    return;
+  }
+
   state.uiMode = mode === 'export' ? 'export' : 'preview';
   render();
 }
@@ -1477,14 +1484,14 @@ function bindEvents() {
 
     if (action === 'select-folder') {
       await handleSelectFolder();
-    } else if (action === 'open-export-workspace') {
+    } else if (EXPORT_FEATURE_ENABLED && action === 'open-export-workspace') {
       syncDefaultExportOutputDir();
       setUiMode('export');
-    } else if (action === 'back-to-preview') {
+    } else if (EXPORT_FEATURE_ENABLED && action === 'back-to-preview') {
       setUiMode('preview');
-    } else if (action === 'select-export-folder') {
+    } else if (EXPORT_FEATURE_ENABLED && action === 'select-export-folder') {
       await handleSelectExportFolder();
-    } else if (action === 'export-png-batch') {
+    } else if (EXPORT_FEATURE_ENABLED && action === 'export-png-batch') {
       await handleBatchExportPng();
     } else if (SOUND_FEATURE_ENABLED && action === 'select-sound-folder') {
       await handleSelectSoundFolder();
@@ -1540,16 +1547,16 @@ function bindEvents() {
           await addPreviewInstance(fileId);
         }
       }
-    } else if (action === 'toggle-export-file') {
+    } else if (EXPORT_FEATURE_ENABLED && action === 'toggle-export-file') {
       const fileId = event.target.closest('[data-file-id]')?.dataset.fileId ?? '';
       if (fileId) {
         toggleExportFileSelection(fileId);
         render();
       }
-    } else if (action === 'select-all-export-files') {
+    } else if (EXPORT_FEATURE_ENABLED && action === 'select-all-export-files') {
       setExportSelection(state.files.map((file) => file.id));
       render();
-    } else if (action === 'clear-export-files') {
+    } else if (EXPORT_FEATURE_ENABLED && action === 'clear-export-files') {
       setExportSelection([]);
       render();
     } else if (action === 'remove-preview-instance') {
@@ -2263,6 +2270,10 @@ function expandedPreviewMarkup() {
 }
 
 function exportPanelMarkup() {
+  if (!EXPORT_FEATURE_ENABLED) {
+    return '';
+  }
+
   const hasFiles = state.files.length > 0;
   if (!hasFiles || state.uiMode !== 'export') {
     return '';
@@ -2393,7 +2404,7 @@ function render() {
           <div class="loading-copy">
             <p class="loading-kicker">Spine Preview Workspace</p>
             <h1>Preparing your animation stage</h1>
-            <p>Optimizing viewport, control surface, and export tools.</p>
+            <p>Optimizing viewport and control surface.</p>
           </div>
           <div class="loading-progress" aria-hidden="true">
             <div class="loading-progress-bar"></div>
@@ -2437,7 +2448,9 @@ function render() {
             />
             <button class="primary-btn" data-action="select-folder">Browse</button>
             <button class="primary-btn accent" data-action="scan-folder" ${state.scanning ? 'disabled' : ''}>${state.scanning ? 'Scanning...' : 'Scan'}</button>
-            <button class="secondary-btn export-entry-btn" data-action="open-export-workspace" ${hasFiles ? '' : 'disabled'}>Export Spine</button>
+            ${EXPORT_FEATURE_ENABLED
+              ? `<button class="secondary-btn export-entry-btn" data-action="open-export-workspace" ${hasFiles ? '' : 'disabled'}>Export Spine</button>`
+              : ''}
           </div>
           ${hasFiles
             ? `<p class="navigator-result source-result">${state.files.length} spine files scanned.</p>`
