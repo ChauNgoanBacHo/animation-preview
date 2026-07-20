@@ -31,7 +31,6 @@ jobs:
           name: animation-preview-windows
           path: |
             out/make/**/*.exe
-            out/make/**/*.nupkg
           if-no-files-found: error
           retention-days: 5
 
