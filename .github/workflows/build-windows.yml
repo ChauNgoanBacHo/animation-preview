@@ -33,6 +33,7 @@ jobs:
             out/make/**/*.exe
             out/make/**/*.nupkg
           if-no-files-found: error
+          retention-days: 5
 
       - if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
