@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, screen } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
@@ -364,6 +364,26 @@ async function saveBatchSpineExportFiles(outputDir, files) {
   return writtenFiles;
 }
 
+async function saveBatchSpriteFramePngs(outputDir, files) {
+  const writtenFiles = [];
+
+  for (const file of files) {
+    if (!file?.fileName || !file?.pngDataUrl) {
+      continue;
+    }
+
+    // Strip any directory components so every PNG lands flat in outputDir,
+    // regardless of what the (user-editable) custom name contains.
+    const safeName = path.basename(file.fileName);
+    const pngPath = path.join(outputDir, safeName);
+    const base64 = String(file.pngDataUrl).replace(/^data:image\/png;base64,/, '');
+    await fs.promises.writeFile(pngPath, Buffer.from(base64, 'base64'));
+    writtenFiles.push(pngPath);
+  }
+
+  return writtenFiles;
+}
+
 function registerIpcHandlers() {
   ipcMain.handle('select-folder', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
@@ -475,6 +495,42 @@ function registerIpcHandlers() {
 
   ipcMain.handle('save-batch-spine-export', handleSaveBatchSpineExport);
   ipcMain.handle('save-batch-png', handleSaveBatchSpineExport);
+
+  ipcMain.handle('save-batch-sprite-frames', async (_event, payload) => {
+    try {
+      const outputDir = payload?.outputDir;
+      const files = Array.isArray(payload?.files) ? payload.files : [];
+      if (!outputDir || !fs.existsSync(outputDir)) {
+        return {
+          ok: false,
+          writtenFiles: [],
+          error: 'Folder export không tồn tại hoặc không thể truy cập.',
+        };
+      }
+
+      const writtenFiles = await saveBatchSpriteFramePngs(outputDir, files);
+      return {
+        ok: true,
+        writtenFiles,
+        error: '',
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        writtenFiles: [],
+        error: error instanceof Error ? error.message : 'Không thể lưu sprite frame PNG.',
+      };
+    }
+  });
+
+  ipcMain.handle('open-folder', async (_event, folderPath) => {
+    if (!folderPath || !fs.existsSync(folderPath)) {
+      return { ok: false, error: 'Folder không tồn tại.' };
+    }
+
+    const error = await shell.openPath(folderPath);
+    return { ok: !error, error };
+  });
 }
 
 function installSpineAssetProtocol() {

@@ -88,6 +88,8 @@ const state = {
     selectedFileIds: [],
     isExporting: false,
     lastSummary: '',
+    lastOutputDir: '',
+    frameQueue: [],
   },
   draggingFileId: '',
   previewRequestId: 0,
@@ -459,7 +461,7 @@ function createOffscreenExportRoot() {
   return root;
 }
 
-async function exportFileToSpinePackageData(file, anchor) {
+async function renderSpinePoseToCanvas(file, options = {}) {
   const root = createOffscreenExportRoot();
   const stage = new SpineStage(root, {
     backgroundColor: 0x000000,
@@ -473,13 +475,18 @@ async function exportFileToSpinePackageData(file, anchor) {
     });
 
     if (file.skins.length) {
-      const skin = file.skins.includes('default') ? 'default' : file.skins[0];
+      const skin = options.skinName && file.skins.includes(options.skinName)
+        ? options.skinName
+        : (file.skins.includes('default') ? 'default' : file.skins[0]);
       SpineStage.setSkin(spine, skin);
     }
 
-    const animation = getDefaultAnimation(file);
+    const animation = options.animationName || getDefaultAnimation(file);
     if (animation) {
       SpineStage.playAnimation(spine, animation, false);
+      if (Number.isFinite(options.elapsedTime) && options.elapsedTime > 0) {
+        SpineStage.seek(spine, options.elapsedTime);
+      }
     }
 
     spine.update(0);
@@ -497,26 +504,45 @@ async function exportFileToSpinePackageData(file, anchor) {
     );
     stage.renderOnce();
 
-    const exportCanvas = stage.app.renderer.extract.canvas(stage.app.stage);
-    const actualWidth = exportCanvas.width || width;
-    const actualHeight = exportCanvas.height || height;
-    const scaleX = actualWidth / width;
-    const scaleY = actualHeight / height;
-    const basePath = String(file.relativeName || file.fileName).replace(/\.json$/i, '');
-
-    return {
-      pngDataUrl: exportCanvas.toDataURL('image/png'),
-      width: actualWidth,
-      height: actualHeight,
-      pivotX: (EXPORT_PADDING_PX + (bounds.width * anchor.x)) * scaleX,
-      pivotY: (EXPORT_PADDING_PX + (bounds.height * anchor.y)) * scaleY,
-      spineVersion: file.version,
-      relativeBasePath: `${basePath}_pivot`,
-    };
+    const canvas = stage.app.renderer.extract.canvas(stage.app.stage);
+    return { canvas, bounds, logicalWidth: width, logicalHeight: height };
   } finally {
     stage.destroy();
     root.remove();
   }
+}
+
+async function exportFileToSpinePackageData(file, anchor, options = {}) {
+  const { canvas, bounds, logicalWidth, logicalHeight } = await renderSpinePoseToCanvas(file, options);
+  const actualWidth = canvas.width || logicalWidth;
+  const actualHeight = canvas.height || logicalHeight;
+  const scaleX = actualWidth / logicalWidth;
+  const scaleY = actualHeight / logicalHeight;
+  const basePath = String(file.relativeName || file.fileName).replace(/\.json$/i, '');
+
+  return {
+    pngDataUrl: canvas.toDataURL('image/png'),
+    width: actualWidth,
+    height: actualHeight,
+    pivotX: (EXPORT_PADDING_PX + (bounds.width * anchor.x)) * scaleX,
+    pivotY: (EXPORT_PADDING_PX + (bounds.height * anchor.y)) * scaleY,
+    spineVersion: file.version,
+    relativeBasePath: `${basePath}_${options.suffix || 'pivot'}`,
+  };
+}
+
+async function captureSpriteFramePng(file, options = {}) {
+  const { canvas } = await renderSpinePoseToCanvas(file, options);
+  return canvas.toDataURL('image/png');
+}
+
+function dedupeFileNames(names) {
+  const counts = new Map();
+  return names.map((name) => {
+    const count = counts.get(name) ?? 0;
+    counts.set(name, count + 1);
+    return count === 0 ? name : `${name}_${count + 1}`;
+  });
 }
 
 async function handleSelectExportFolder() {
@@ -587,6 +613,137 @@ async function handleBatchExportPng() {
     updateSuccess(state.export.lastSummary);
   } catch (error) {
     updateStatus(error instanceof Error ? error.message : 'Không thể export PNG.');
+  } finally {
+    state.export.isExporting = false;
+    render();
+  }
+}
+
+function sanitizeForFileName(value) {
+  return String(value ?? '').replace(/[^a-zA-Z0-9_-]+/g, '_');
+}
+
+function canRegisterFrame() {
+  const instance = getActivePreviewInstance();
+  if (!instance?.spine || !instance.paused || !instance.currentAnimation) {
+    return false;
+  }
+
+  return Number.isFinite(instance.elapsed) && instance.elapsed >= 0;
+}
+
+function registerFrameExport() {
+  if (!canRegisterFrame()) {
+    updateStatus('Pause animation ở một frame hợp lệ trước khi đăng ký export sprite frame.');
+    return;
+  }
+
+  const instance = getActivePreviewInstance();
+  const file = getPreviewFile(instance);
+  if (!file) {
+    return;
+  }
+
+  syncDefaultExportOutputDir();
+  state.export.frameQueue = [
+    ...state.export.frameQueue,
+    {
+      id: `frame-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      fileId: file.id,
+      fileName: file.fileName,
+      animationName: instance.currentAnimation,
+      skinName: instance.currentSkin,
+      elapsed: instance.elapsed,
+      customName: spineDisplayName(file),
+    },
+  ];
+  updateSuccess(`Đã đăng ký frame ${formatSeconds(instance.elapsed)}s (${instance.currentAnimation}).`);
+}
+
+function removeFrameExport(frameId) {
+  state.export.frameQueue = state.export.frameQueue.filter((item) => item.id !== frameId);
+  render();
+}
+
+function updateFrameExportName(frameId, value) {
+  const item = state.export.frameQueue.find((entry) => entry.id === frameId);
+  if (item) {
+    item.customName = value;
+  }
+}
+
+function clearFrameQueue() {
+  state.export.frameQueue = [];
+  render();
+}
+
+async function handleOpenExportFolder() {
+  if (!state.export.lastOutputDir) {
+    return;
+  }
+
+  const result = await window.spinePreview.openFolder(state.export.lastOutputDir);
+  if (!result?.ok) {
+    updateStatus(result?.error || 'Không thể mở folder export.');
+  }
+}
+
+async function handleExportFrameQueue() {
+  const items = state.export.frameQueue;
+  if (!items.length) {
+    updateStatus('Chưa có frame nào được đăng ký để export.');
+    return;
+  }
+
+  const outputDir = state.export.outputDir.trim();
+  if (!outputDir) {
+    updateStatus('Chọn folder output trước khi export sprite frame.');
+    return;
+  }
+
+  state.export.isExporting = true;
+  state.export.lastSummary = '';
+  updateStatus('');
+  render();
+
+  try {
+    const rawNames = items.map((item) =>
+      sanitizeForFileName(item.customName?.trim() || item.fileName || item.animationName),
+    );
+    const uniqueNames = dedupeFileNames(rawNames);
+    const payloadFiles = [];
+
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      const file = getFileById(item.fileId);
+      if (!file) {
+        continue;
+      }
+
+      const pngDataUrl = await captureSpriteFramePng(file, {
+        skinName: item.skinName,
+        animationName: item.animationName,
+        elapsedTime: item.elapsed,
+      });
+      payloadFiles.push({ fileName: `${uniqueNames[index]}.png`, pngDataUrl });
+    }
+
+    const result = await window.spinePreview.saveBatchSpriteFrames({
+      outputDir,
+      files: payloadFiles,
+    });
+
+    if (!result?.ok) {
+      updateStatus(result?.error || 'Không thể export sprite frame.');
+      return;
+    }
+
+    state.export.frameQueue = [];
+    state.export.lastOutputDir = outputDir;
+    state.export.lastSummary = `Đã export ${result.writtenFiles.length} sprite frame vào ${outputDir}.`;
+    updateSuccess(state.export.lastSummary);
+  } catch (error) {
+    updateStatus(error instanceof Error ? error.message : 'Không thể export sprite frame.');
   } finally {
     state.export.isExporting = false;
     render();
@@ -819,6 +976,7 @@ async function handleScanFolder() {
   state.currentIndex = -1;
   state.export.selectedFileIds = [];
   state.export.lastSummary = '';
+  state.export.frameQueue = [];
   state.preview.instances = [];
   state.preview.activeInstanceId = '';
   updateStatus('');
@@ -1491,7 +1649,7 @@ function bindEvents() {
       setUiMode('export');
     } else if (EXPORT_FEATURE_ENABLED && action === 'back-to-preview') {
       setUiMode('preview');
-    } else if (EXPORT_FEATURE_ENABLED && action === 'select-export-folder') {
+    } else if (action === 'select-export-folder') {
       await handleSelectExportFolder();
     } else if (EXPORT_FEATURE_ENABLED && action === 'export-png-batch') {
       await handleBatchExportPng();
@@ -1570,6 +1728,19 @@ function bindEvents() {
         setActivePreviewInstance(instanceId);
         render();
       }
+    } else if (action === 'register-frame-export') {
+      registerFrameExport();
+    } else if (action === 'remove-frame-export') {
+      const frameId = event.target.closest('[data-frame-export-id]')?.dataset.frameExportId ?? '';
+      if (frameId) {
+        removeFrameExport(frameId);
+      }
+    } else if (action === 'clear-frame-queue') {
+      clearFrameQueue();
+    } else if (action === 'export-frame-queue') {
+      await handleExportFrameQueue();
+    } else if (action === 'open-export-folder') {
+      await handleOpenExportFolder();
     }
   });
 
@@ -1668,6 +1839,11 @@ function bindEvents() {
       state.export.anchorX = target.value;
     } else if (target.matches('[data-export-anchor-y]')) {
       state.export.anchorY = target.value;
+    } else if (target.matches('[data-frame-name-input]')) {
+      const frameId = target.closest('[data-frame-export-id]')?.dataset.frameExportId ?? '';
+      if (frameId) {
+        updateFrameExportName(frameId, target.value);
+      }
     } else if (target.matches('[data-export-folder-input]')) {
       state.export.outputDir = target.value;
     } else if (target.matches('[data-speed-range]')) {
@@ -1786,6 +1962,83 @@ function backgroundPickerMarkup() {
           <input type="color" data-background-custom value="${escapeHtml(customColor)}">
         </label>
       </div>
+    </div>
+  `;
+}
+
+function frameExportPanelMarkup() {
+  const queue = state.export.frameQueue;
+  const canRegister = canRegisterFrame();
+  const items = queue
+    .map(
+      (item) => `
+        <div class="sequence-item frame-export-item">
+          <input
+            class="frame-export-name-input"
+            type="text"
+            data-frame-name-input
+            data-frame-export-id="${escapeHtml(item.id)}"
+            value="${escapeHtml(item.customName ?? item.fileName)}"
+            placeholder="${escapeHtml(item.fileName)}"
+          />
+          <span class="frame-export-meta">${escapeHtml(item.animationName)} @ ${formatSeconds(item.elapsed)}s</span>
+          <button
+            class="sequence-remove"
+            data-action="remove-frame-export"
+            data-frame-export-id="${escapeHtml(item.id)}"
+            type="button"
+            aria-label="Remove registered frame"
+          >
+            <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M5 5l10 10M15 5L5 15" />
+            </svg>
+          </button>
+        </div>
+      `,
+    )
+    .join('');
+
+  return `
+    <div class="sequence-panel">
+      <div class="sequence-header">
+        <span>Sprite Frame Export</span>
+        <span>${queue.length} registered</span>
+      </div>
+      <div class="button-row">
+        <button
+          class="secondary-btn control-btn"
+          data-action="register-frame-export"
+          ${canRegister ? '' : 'disabled'}
+          title="${canRegister ? 'Đăng ký frame hiện tại' : 'Pause animation ở frame hợp lệ trước'}"
+        >Register Frame</button>
+        <button
+          class="secondary-btn control-btn sequence-play-btn"
+          data-action="export-frame-queue"
+          ${queue.length && !state.export.isExporting ? '' : 'disabled'}
+        >${state.export.isExporting ? 'Exporting...' : 'Export Frames (PNG)'}</button>
+        <button class="secondary-btn control-btn" data-action="clear-frame-queue" ${queue.length ? '' : 'disabled'}>Clear</button>
+      </div>
+      <div class="folder-row source-row export-row">
+        <input
+          data-export-folder-input
+          class="folder-input"
+          type="text"
+          placeholder="/path/to/output-folder"
+          value="${escapeHtml(state.export.outputDir)}"
+        />
+        <button class="primary-btn" data-action="select-export-folder">Browse</button>
+      </div>
+      <div class="sequence-list">
+        ${items || '<p class="sequence-empty">Chưa có frame nào được đăng ký.</p>'}
+      </div>
+      ${state.export.lastSummary
+        ? `
+          <div class="frame-export-summary">
+            <span>${escapeHtml(state.export.lastSummary)}</span>
+            <button class="secondary-btn control-btn" type="button" data-action="open-export-folder">Open Folder</button>
+          </div>
+        `
+        : ''}
     </div>
   `;
 }
@@ -2035,6 +2288,8 @@ function previewPanelMarkup() {
             ${sequenceItems || '<p class="sequence-empty">Chưa có animation nào trong sequence.</p>'}
           </div>
         </div>
+
+        ${frameExportPanelMarkup()}
       `
     : `
         <div class="controls-placeholder">
