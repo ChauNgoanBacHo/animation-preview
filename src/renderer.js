@@ -90,6 +90,8 @@ const state = {
     lastSummary: '',
     lastOutputDir: '',
     frameQueue: [],
+    anchorCanvasOpen: false,
+    anchorSnapshot: null,
   },
   draggingFileId: '',
   previewRequestId: 0,
@@ -263,6 +265,7 @@ function createPreviewInstance(fileId) {
     sequenceDurations: null,
     sequenceStep: 0,
     sequenceCleanup: null,
+    exportAnchor: { x: 0.5, y: 0.5 },
   };
 }
 
@@ -531,9 +534,37 @@ async function exportFileToSpinePackageData(file, anchor, options = {}) {
   };
 }
 
+// Pads the canvas asymmetrically around the anchor point so the anchor lands
+// exactly at the output image's center — mirrors how the flattened-package
+// exporter bakes pivot into the JSON offset, but for a plain PNG there's no
+// JSON to carry it, so the pixels themselves have to encode it.
+function bakeAnchorIntoCanvas(canvas, anchorPxX, anchorPxY) {
+  const width = canvas.width;
+  const height = canvas.height;
+  const halfWidth = Math.max(anchorPxX, width - anchorPxX);
+  const halfHeight = Math.max(anchorPxY, height - anchorPxY);
+  const offsetX = halfWidth - anchorPxX;
+  const offsetY = halfHeight - anchorPxY;
+
+  if (offsetX === 0 && offsetY === 0 && width === Math.ceil(halfWidth * 2) && height === Math.ceil(halfHeight * 2)) {
+    return canvas;
+  }
+
+  const output = document.createElement('canvas');
+  output.width = Math.max(1, Math.ceil(halfWidth * 2));
+  output.height = Math.max(1, Math.ceil(halfHeight * 2));
+  output.getContext('2d').drawImage(canvas, offsetX, offsetY);
+  return output;
+}
+
 async function captureSpriteFramePng(file, options = {}) {
   const { canvas } = await renderSpinePoseToCanvas(file, options);
-  return canvas.toDataURL('image/png');
+  const anchor = options.anchor ?? { x: 0.5, y: 0.5 };
+  // Anchor is a fraction of the exported canvas itself (0,0 = top-left,
+  // 1,1 = bottom-right) — matches the raw percentage shown in the numeric
+  // fields and the marker on the static snapshot exactly, pixel for pixel.
+  const baked = bakeAnchorIntoCanvas(canvas, anchor.x * canvas.width, anchor.y * canvas.height);
+  return baked.toDataURL('image/png');
 }
 
 function dedupeFileNames(names) {
@@ -655,9 +686,66 @@ function registerFrameExport() {
       skinName: instance.currentSkin,
       elapsed: instance.elapsed,
       customName: spineDisplayName(file),
+      anchorX: instance.exportAnchor?.x ?? 0.5,
+      anchorY: instance.exportAnchor?.y ?? 0.5,
     },
   ];
   updateSuccess(`Đã đăng ký frame ${formatSeconds(instance.elapsed)}s (${instance.currentAnimation}).`);
+}
+
+function setActiveAnchorValue(axis, rawValue) {
+  const instance = getActivePreviewInstance();
+  if (!instance) {
+    return;
+  }
+
+  const percent = Number(rawValue);
+  const normalized = Number.isFinite(percent)
+    ? Math.max(0, Math.min(100, percent)) / 100
+    : instance.exportAnchor[axis];
+  instance.exportAnchor = { ...instance.exportAnchor, [axis]: normalized };
+
+  // Patch the marker/readout directly instead of calling render(), so typing
+  // a multi-digit percentage doesn't blow away input focus on every keystroke.
+  const marker = document.querySelector('[data-anchor-canvas-marker]');
+  if (marker) {
+    marker.style.left = `${instance.exportAnchor.x * 100}%`;
+    marker.style.top = `${instance.exportAnchor.y * 100}%`;
+  }
+}
+
+function toggleAnchorCanvasTab() {
+  state.export.anchorCanvasOpen = !state.export.anchorCanvasOpen;
+  render();
+  if (state.export.anchorCanvasOpen) {
+    refreshAnchorSnapshot();
+  }
+}
+
+async function refreshAnchorSnapshot() {
+  const instance = getActivePreviewInstance();
+  const file = getPreviewFile(instance);
+  if (!instance?.spine || !file) {
+    state.export.anchorSnapshot = null;
+    render();
+    return;
+  }
+
+  try {
+    const { canvas } = await renderSpinePoseToCanvas(file, {
+      skinName: instance.currentSkin,
+      animationName: instance.currentAnimation,
+      elapsedTime: instance.elapsed,
+    });
+    state.export.anchorSnapshot = {
+      dataUrl: canvas.toDataURL('image/png'),
+      instanceId: instance.id,
+    };
+  } catch (error) {
+    state.export.anchorSnapshot = null;
+    updateStatus(error instanceof Error ? error.message : 'Không thể tạo anchor canvas snapshot.');
+  }
+  render();
 }
 
 function removeFrameExport(frameId) {
@@ -724,6 +812,7 @@ async function handleExportFrameQueue() {
         skinName: item.skinName,
         animationName: item.animationName,
         elapsedTime: item.elapsed,
+        anchor: { x: item.anchorX ?? 0.5, y: item.anchorY ?? 0.5 },
       });
       payloadFiles.push({ fileName: `${uniqueNames[index]}.png`, pngDataUrl });
     }
@@ -1741,6 +1830,10 @@ function bindEvents() {
       await handleExportFrameQueue();
     } else if (action === 'open-export-folder') {
       await handleOpenExportFolder();
+    } else if (action === 'toggle-anchor-canvas') {
+      toggleAnchorCanvasTab();
+    } else if (action === 'refresh-anchor-canvas') {
+      await refreshAnchorSnapshot();
     }
   });
 
@@ -1839,6 +1932,10 @@ function bindEvents() {
       state.export.anchorX = target.value;
     } else if (target.matches('[data-export-anchor-y]')) {
       state.export.anchorY = target.value;
+    } else if (target.matches('[data-anchor-x-input]')) {
+      setActiveAnchorValue('x', target.value);
+    } else if (target.matches('[data-anchor-y-input]')) {
+      setActiveAnchorValue('y', target.value);
     } else if (target.matches('[data-frame-name-input]')) {
       const frameId = target.closest('[data-frame-export-id]')?.dataset.frameExportId ?? '';
       if (frameId) {
@@ -1881,6 +1978,8 @@ function bindEvents() {
       handleSkinChange(target.value);
     } else if (SOUND_FEATURE_ENABLED && target.matches('[data-sound-select]')) {
       setSelectedSound(target.value);
+    } else if (target.matches('[data-anchor-x-input], [data-anchor-y-input]')) {
+      render();
     }
   });
 
@@ -1966,9 +2065,37 @@ function backgroundPickerMarkup() {
   `;
 }
 
+function anchorCanvasMarkup() {
+  const instance = getActivePreviewInstance();
+  const snapshot = state.export.anchorSnapshot;
+  const anchor = instance?.exportAnchor ?? { x: 0.5, y: 0.5 };
+  const hasSnapshot = Boolean(snapshot && instance && snapshot.instanceId === instance.id);
+
+  return `
+    <div class="anchor-canvas-panel">
+      <div class="anchor-canvas-toolbar">
+        <span>Static snapshot toàn bộ spine ở frame hiện tại, dùng để canh anchor cho chính xác.</span>
+        <button type="button" class="secondary-btn control-btn" data-action="refresh-anchor-canvas" ${instance ? '' : 'disabled'}>Refresh</button>
+      </div>
+      <div class="anchor-canvas-frame">
+        ${hasSnapshot
+          ? `
+            <div class="anchor-canvas-stage">
+              <img class="anchor-canvas-image" src="${snapshot.dataUrl}" alt="Spine snapshot" />
+              <div class="anchor-canvas-marker" data-anchor-canvas-marker style="left:${anchor.x * 100}%;top:${anchor.y * 100}%;"></div>
+            </div>
+          `
+          : '<p class="anchor-canvas-empty">Bấm Refresh để chụp pose hiện tại.</p>'}
+      </div>
+    </div>
+  `;
+}
+
 function frameExportPanelMarkup() {
   const queue = state.export.frameQueue;
   const canRegister = canRegisterFrame();
+  const activeInstance = getActivePreviewInstance();
+  const activeAnchor = activeInstance?.exportAnchor ?? { x: 0.5, y: 0.5 };
   const items = queue
     .map(
       (item) => `
@@ -1981,7 +2108,7 @@ function frameExportPanelMarkup() {
             value="${escapeHtml(item.customName ?? item.fileName)}"
             placeholder="${escapeHtml(item.fileName)}"
           />
-          <span class="frame-export-meta">${escapeHtml(item.animationName)} @ ${formatSeconds(item.elapsed)}s</span>
+          <span class="frame-export-meta">${escapeHtml(item.animationName)} @ ${formatSeconds(item.elapsed)}s · anchor ${Math.round((item.anchorX ?? 0.5) * 100)}%,${Math.round((item.anchorY ?? 0.5) * 100)}%</span>
           <button
             class="sequence-remove"
             data-action="remove-frame-export"
@@ -2004,6 +2131,39 @@ function frameExportPanelMarkup() {
         <span>Sprite Frame Export</span>
         <span>${queue.length} registered</span>
       </div>
+      <div class="anchor-fields">
+        <label class="field anchor-field">
+          <span>Anchor X (%)</span>
+          <input
+            type="number"
+            min="0"
+            max="100"
+            step="1"
+            data-anchor-x-input
+            value="${Math.round(activeAnchor.x * 100)}"
+            ${activeInstance ? '' : 'disabled'}
+          />
+        </label>
+        <label class="field anchor-field">
+          <span>Anchor Y (%)</span>
+          <input
+            type="number"
+            min="0"
+            max="100"
+            step="1"
+            data-anchor-y-input
+            value="${Math.round(activeAnchor.y * 100)}"
+            ${activeInstance ? '' : 'disabled'}
+          />
+        </label>
+        <button
+          type="button"
+          class="secondary-btn control-btn anchor-canvas-toggle"
+          data-action="toggle-anchor-canvas"
+          ${activeInstance ? '' : 'disabled'}
+        >${state.export.anchorCanvasOpen ? 'Ẩn' : 'Mở'} Anchor Canvas</button>
+      </div>
+      ${state.export.anchorCanvasOpen ? anchorCanvasMarkup() : ''}
       <div class="button-row">
         <button
           class="secondary-btn control-btn"
