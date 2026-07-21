@@ -35,6 +35,8 @@ function backgroundCssValue(background) {
 
 let resizeFrameId = 0;
 let previewResizeObserver = null;
+let exportResizeFrameId = 0;
+let exportResizeObserver = null;
 let previewInstanceIdSeed = 0;
 
 const state = {
@@ -80,6 +82,12 @@ const state = {
     selectedSoundId: '',
     animationListOpen: false,
     instances: [],
+    contextMenu: {
+      open: false,
+      x: 0,
+      y: 0,
+      instanceId: '',
+    },
   },
   export: {
     outputDir: '',
@@ -90,6 +98,15 @@ const state = {
     lastSummary: '',
     lastOutputDir: '',
     frameQueue: [],
+    modal: {
+      open: false,
+      isLoading: false,
+      error: '',
+      sourceInstanceId: '',
+      fileId: '',
+      stage: null,
+      instance: null,
+    },
   },
   draggingFileId: '',
   previewRequestId: 0,
@@ -268,6 +285,26 @@ function createPreviewInstance(fileId) {
   };
 }
 
+function createExportModalInstance(fileId, sourceInstance) {
+  return {
+    id: `export-instance-${previewInstanceIdSeed += 1}`,
+    fileId,
+    spine: null,
+    currentAnimation: sourceInstance?.currentAnimation || '',
+    currentSkin: sourceInstance?.currentSkin || '',
+    loop: false,
+    paused: true,
+    speed: 1,
+    elapsed: Number.isFinite(sourceInstance?.elapsed) ? sourceInstance.elapsed : 0,
+    duration: Number.isFinite(sourceInstance?.duration) ? sourceInstance.duration : 0,
+    zoom: 1,
+    exportCanvasMode: sourceInstance?.exportCanvasMode === 'custom' ? 'custom' : 'auto',
+    exportCanvasSize: sourceInstance?.exportCanvasMode === 'custom'
+      ? { ...(sourceInstance.exportCanvasSize ?? { width: 0, height: 0 }) }
+      : { width: 0, height: 0 },
+  };
+}
+
 function getPreviewInstanceById(instanceId) {
   return state.preview.instances.find((instance) => instance.id === instanceId) ?? null;
 }
@@ -284,6 +321,14 @@ function getPreviewFile(instance) {
   return instance ? getFileById(instance.fileId) : null;
 }
 
+function getExportModalInstance() {
+  return state.export.modal.instance;
+}
+
+function getExportModalFile() {
+  return state.export.modal.fileId ? getFileById(state.export.modal.fileId) : null;
+}
+
 function syncPreviewInstances() {
   const validIds = new Set(state.files.map((file) => file.id));
   state.preview.instances = state.preview.instances.filter(
@@ -292,6 +337,20 @@ function syncPreviewInstances() {
   if (!getActivePreviewInstance()) {
     state.preview.activeInstanceId = state.preview.instances[0]?.id ?? '';
   }
+}
+
+function closePreviewContextMenu() {
+  state.preview.contextMenu.open = false;
+  state.preview.contextMenu.instanceId = '';
+}
+
+function openPreviewContextMenu(instanceId, x, y) {
+  state.preview.contextMenu = {
+    open: true,
+    x,
+    y,
+    instanceId,
+  };
 }
 
 function normalizeFileBaseName(name) {
@@ -653,12 +712,7 @@ function sanitizeForFileName(value) {
 }
 
 function canRegisterFrame() {
-  const instance = getActivePreviewInstance();
-  if (!instance?.spine || !instance.paused || !instance.currentAnimation) {
-    return false;
-  }
-
-  return Number.isFinite(instance.elapsed) && instance.elapsed >= 0;
+  return canRegisterExportModalFrame();
 }
 
 function registerFrameExport() {
@@ -667,8 +721,8 @@ function registerFrameExport() {
     return;
   }
 
-  const instance = getActivePreviewInstance();
-  const file = getPreviewFile(instance);
+  const instance = getExportModalInstance();
+  const file = getExportModalFile();
   if (!file) {
     return;
   }
@@ -692,14 +746,7 @@ function registerFrameExport() {
 }
 
 function setActiveCanvasSizeValue(axis, rawValue) {
-  const instance = getActivePreviewInstance();
-  if (!instance) {
-    return;
-  }
-
-  const value = Number(rawValue);
-  const normalized = Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
-  instance.exportCanvasSize = { ...instance.exportCanvasSize, [axis]: normalized };
+  setExportModalCanvasSizeValue(axis, rawValue);
 }
 
 // The export canvas is always the tight spine bounds plus the fixed export
@@ -718,25 +765,7 @@ function naturalExportSize(instance) {
 }
 
 function setCanvasMode(mode) {
-  const instance = getActivePreviewInstance();
-  if (!instance) {
-    return;
-  }
-
-  const nextMode = mode === 'custom' ? 'custom' : 'auto';
-  if (nextMode === 'custom') {
-    const hasNoSize = !instance.exportCanvasSize.width && !instance.exportCanvasSize.height;
-    if (hasNoSize) {
-      // Start the box matching the character exactly, instead of collapsed to 0.
-      instance.exportCanvasSize = naturalExportSize(instance);
-    }
-  } else {
-    // Auto always tracks natural bounds — drop any leftover custom size so
-    // the overlay/export don't keep aligning to the old custom box.
-    instance.exportCanvasSize = { width: 0, height: 0 };
-  }
-  instance.exportCanvasMode = nextMode;
-  render();
+  setExportModalCanvasMode(mode);
 }
 
 // Screen-space box geometry for the live overlay: box stays centered on the
@@ -1121,8 +1150,10 @@ async function handleScanFolder() {
   state.export.selectedFileIds = [];
   state.export.lastSummary = '';
   state.export.frameQueue = [];
+  resetExportModalState();
   state.preview.instances = [];
   state.preview.activeInstanceId = '';
+  closePreviewContextMenu();
   updateStatus('');
   destroyPreview();
   render();
@@ -1233,6 +1264,82 @@ function clearActiveSequence() {
   state.preview.sequenceStep = 0;
 }
 
+function setExportModalPlaybackMeta() {
+  const instance = getExportModalInstance();
+  if (!instance?.spine) {
+    return;
+  }
+
+  const playback = SpineStage.currentPlayback(instance.spine);
+  instance.currentAnimation = playback.name || instance.currentAnimation;
+  instance.duration = playback.duration;
+  instance.elapsed = playback.elapsed;
+}
+
+function updateExportModalZoomLabels(value) {
+  document.querySelectorAll('[data-export-modal-zoom-value]').forEach((node) => {
+    node.textContent = `${Math.round(value * 100)}%`;
+  });
+}
+
+function handleExportModalTicker() {
+  const instance = getExportModalInstance();
+  if (!instance?.spine) {
+    return;
+  }
+
+  setExportModalPlaybackMeta();
+  const currentAnimation = document.querySelector('[data-export-modal-current-animation]');
+  const elapsed = document.querySelector('[data-export-modal-elapsed]');
+  const progress = document.querySelector('[data-export-modal-progress]');
+  const fill = document.querySelector('[data-export-modal-progress-fill]');
+  const playPauseButton = document.querySelector('[data-action="toggle-export-modal-pause"]');
+  const duration = instance.duration || 0;
+  const ratio = duration > 0 ? Math.min(instance.elapsed / duration, 1) : 0;
+
+  if (currentAnimation) {
+    currentAnimation.textContent = instance.currentAnimation || 'None';
+  }
+  if (elapsed) {
+    elapsed.textContent = `${formatSeconds(instance.elapsed)} / ${formatSeconds(duration)}s`;
+  }
+  if (progress instanceof HTMLInputElement) {
+    progress.max = String(duration || 0);
+    progress.step = String(FRAME_STEP);
+    progress.value = String(snapToFrame(instance.elapsed));
+  }
+  if (fill) {
+    fill.setAttribute('style', `width:${ratio * 100}%`);
+  }
+  if (playPauseButton instanceof HTMLButtonElement) {
+    const isPlayState = instance.paused || (!instance.loop && instance.duration > 0 && instance.elapsed >= instance.duration);
+    const nextState = isPlayState ? 'play' : 'pause';
+    if (playPauseButton.dataset.iconState !== nextState) {
+      playPauseButton.dataset.iconState = nextState;
+      playPauseButton.innerHTML = playbackToggleIconMarkupFromPaused(isPlayState);
+      playPauseButton.setAttribute('aria-label', isPlayState ? 'Play' : 'Pause');
+    }
+  }
+  syncCanvasSizeOverlay(instance);
+}
+
+function playbackToggleIconMarkupFromPaused(paused) {
+  if (paused) {
+    return `
+      <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M8 5l11 7-11 7z" fill="currentColor" stroke="none" />
+      </svg>
+    `;
+  }
+
+  return `
+    <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="7" y="5" width="3.5" height="14" rx="1" fill="currentColor" stroke="none" />
+      <rect x="13.5" y="5" width="3.5" height="14" rx="1" fill="currentColor" stroke="none" />
+    </svg>
+  `;
+}
+
 async function ensurePreviewStage() {
   if (state.preview.stage) {
     attachStageView();
@@ -1251,6 +1358,307 @@ async function ensurePreviewStage() {
   state.preview.stage = stage;
   stage.app.ticker.add(handleTicker);
   return stage;
+}
+
+function attachExportModalStageView() {
+  if (!state.export.modal.stage) {
+    return;
+  }
+
+  const viewport = document.querySelector('[data-export-modal-viewport]');
+  const view = state.export.modal.stage.app.view;
+  if (viewport) {
+    state.export.modal.stage.setContainer(viewport);
+  }
+
+  if (viewport && view.parentElement !== viewport) {
+    viewport.appendChild(view);
+  }
+}
+
+function observeExportModalViewport() {
+  exportResizeObserver?.disconnect();
+
+  if (!state.export.modal.stage) {
+    return;
+  }
+
+  const viewport = document.querySelector('[data-export-modal-viewport]');
+  if (!viewport) {
+    return;
+  }
+
+  exportResizeObserver = new ResizeObserver(() => {
+    scheduleExportModalResize();
+  });
+  exportResizeObserver.observe(viewport);
+}
+
+function refreshExportModalLayout() {
+  if (!state.export.modal.stage) {
+    return;
+  }
+
+  attachExportModalStageView();
+  state.export.modal.stage.syncViewportSize();
+  state.export.modal.stage.renderOnce();
+  syncCanvasSizeOverlay(getExportModalInstance());
+}
+
+function scheduleExportModalResize() {
+  if (exportResizeFrameId) {
+    window.cancelAnimationFrame(exportResizeFrameId);
+  }
+
+  exportResizeFrameId = window.requestAnimationFrame(() => {
+    exportResizeFrameId = 0;
+    refreshExportModalLayout();
+  });
+}
+
+async function ensureExportModalStage() {
+  if (state.export.modal.stage) {
+    attachExportModalStageView();
+    state.export.modal.stage.syncViewportSize();
+    return state.export.modal.stage;
+  }
+
+  const viewport = document.querySelector('[data-export-modal-viewport]');
+  if (!viewport) {
+    state.export.modal.error = 'Không tạo được viewport export.';
+    render();
+    return null;
+  }
+
+  const stage = new SpineStage(viewport, currentStageThemeOptions());
+  state.export.modal.stage = stage;
+  stage.app.ticker.add(handleExportModalTicker);
+  return stage;
+}
+
+function closeExportModal() {
+  state.export.frameQueue = [];
+  state.export.lastSummary = '';
+  resetExportModalState();
+  render();
+}
+
+async function openExportModal(instanceId) {
+  const sourceInstance = getPreviewInstanceById(instanceId);
+  const file = getPreviewFile(sourceInstance);
+  if (!sourceInstance || !file) {
+    return;
+  }
+
+  closePreviewContextMenu();
+  state.preview.animationListOpen = false;
+  syncDefaultExportOutputDir();
+  state.export.modal.open = true;
+  state.export.modal.isLoading = true;
+  state.export.modal.error = '';
+  state.export.modal.sourceInstanceId = instanceId;
+  state.export.modal.fileId = file.id;
+  state.export.frameQueue = [];
+  state.export.lastSummary = '';
+  render();
+
+  try {
+    const stage = await ensureExportModalStage();
+    if (!stage) {
+      return;
+    }
+
+    stage.spines.slice().forEach((spine) => stage.removeSpine(spine));
+    const instance = createExportModalInstance(file.id, sourceInstance);
+    const spine = await stage.loadSpine({
+      jsonPath: file.jsonPath,
+      atlasPath: file.atlasPath,
+    });
+
+    if (!state.export.modal.open || state.export.modal.sourceInstanceId !== instanceId) {
+      stage.removeSpine(spine);
+      return;
+    }
+
+    instance.spine = spine;
+    if (file.skins.length) {
+      instance.currentSkin = instance.currentSkin && file.skins.includes(instance.currentSkin)
+        ? instance.currentSkin
+        : (file.skins.includes('default') ? 'default' : file.skins[0]);
+      SpineStage.setSkin(spine, instance.currentSkin);
+    }
+
+    instance.currentAnimation = instance.currentAnimation || getDefaultAnimation(file);
+    if (instance.currentAnimation) {
+      SpineStage.playAnimation(spine, instance.currentAnimation, instance.loop);
+      if (Number.isFinite(instance.elapsed) && instance.elapsed > 0) {
+        SpineStage.seek(spine, instance.elapsed);
+      }
+      instance.duration = SpineStage.animationDuration(spine, instance.currentAnimation);
+    }
+
+    spine.update(0);
+    await waitForNextFrame();
+    stage.syncViewportSize();
+    stage.centerSpineAt(spine, stage.centerPoint().x, stage.centerPoint().y);
+    instance.zoom = stage.setSpineScale(spine, 1);
+    instance.paused = true;
+    instance.spine.state.timeScale = 0;
+
+    state.export.modal.instance = instance;
+    state.export.modal.isLoading = false;
+    stage.renderOnce();
+    render();
+  } catch (error) {
+    state.export.modal.isLoading = false;
+    state.export.modal.error = error instanceof Error ? error.message : 'Không thể mở export PNG.';
+    render();
+  }
+}
+
+function canRegisterExportModalFrame() {
+  const instance = getExportModalInstance();
+  if (!instance?.spine || !instance.paused || !instance.currentAnimation) {
+    return false;
+  }
+
+  return Number.isFinite(instance.elapsed) && instance.elapsed >= 0;
+}
+
+function setExportModalCanvasSizeValue(axis, rawValue) {
+  const instance = getExportModalInstance();
+  if (!instance) {
+    return;
+  }
+
+  const value = Number(rawValue);
+  const normalized = Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+  instance.exportCanvasSize = { ...instance.exportCanvasSize, [axis]: normalized };
+}
+
+function setExportModalCanvasMode(mode) {
+  const instance = getExportModalInstance();
+  if (!instance) {
+    return;
+  }
+
+  const nextMode = mode === 'custom' ? 'custom' : 'auto';
+  if (nextMode === 'custom') {
+    const hasNoSize = !instance.exportCanvasSize.width && !instance.exportCanvasSize.height;
+    if (hasNoSize) {
+      instance.exportCanvasSize = naturalExportSize(instance);
+    }
+  } else {
+    instance.exportCanvasSize = { width: 0, height: 0 };
+  }
+  instance.exportCanvasMode = nextMode;
+  render();
+}
+
+function toggleExportModalPause() {
+  const instance = getExportModalInstance();
+  if (!instance?.spine) {
+    return;
+  }
+
+  const reachedEnd = !instance.loop && instance.duration > 0 && instance.elapsed >= instance.duration;
+  if (reachedEnd) {
+    restartExportModalAnimation();
+    return;
+  }
+
+  instance.paused = !instance.paused;
+  instance.spine.state.timeScale = instance.paused ? 0 : instance.speed;
+  state.export.modal.stage?.renderOnce();
+  render();
+}
+
+function restartExportModalAnimation() {
+  const instance = getExportModalInstance();
+  if (!instance?.spine || !instance.currentAnimation) {
+    return;
+  }
+
+  SpineStage.playAnimation(instance.spine, instance.currentAnimation, instance.loop);
+  instance.elapsed = 0;
+  instance.paused = false;
+  instance.spine.state.timeScale = instance.speed;
+  state.export.modal.stage?.renderOnce();
+  render();
+}
+
+function handleExportModalAnimationChange(value) {
+  const instance = getExportModalInstance();
+  if (!instance?.spine || !value) {
+    return;
+  }
+
+  instance.currentAnimation = value;
+  instance.duration = SpineStage.animationDuration(instance.spine, value);
+  instance.elapsed = 0;
+  instance.paused = true;
+  SpineStage.playAnimation(instance.spine, value, instance.loop);
+  SpineStage.seek(instance.spine, 0);
+  instance.spine.state.timeScale = 0;
+  state.export.modal.stage?.renderOnce();
+  render();
+}
+
+function handleExportModalSkinChange(value) {
+  const instance = getExportModalInstance();
+  if (!instance?.spine || !value) {
+    return;
+  }
+
+  instance.currentSkin = value;
+  SpineStage.setSkin(instance.spine, value);
+  if (instance.currentAnimation) {
+    SpineStage.playAnimation(instance.spine, instance.currentAnimation, instance.loop);
+    SpineStage.seek(instance.spine, instance.elapsed);
+  }
+  instance.spine.state.timeScale = 0;
+  state.export.modal.stage?.renderOnce();
+  render();
+}
+
+function seekExportModalAnimation(value) {
+  const instance = getExportModalInstance();
+  if (!instance?.spine || !state.export.modal.stage) {
+    return;
+  }
+
+  const localTime = snapToFrame(Number(value));
+  SpineStage.seek(instance.spine, localTime);
+  instance.elapsed = localTime;
+  instance.paused = true;
+  instance.spine.state.timeScale = 0;
+  state.export.modal.stage.renderOnce();
+  handleExportModalTicker();
+}
+
+function zoomExportModalBy(factor) {
+  const instance = getExportModalInstance();
+  if (!state.export.modal.stage || !instance?.spine) {
+    return;
+  }
+
+  instance.zoom = state.export.modal.stage.zoomSpineBy(instance.spine, factor);
+  state.export.modal.stage.renderOnce();
+  updateExportModalZoomLabels(instance.zoom);
+  syncCanvasSizeOverlay(instance);
+}
+
+function resetExportModalZoom() {
+  const instance = getExportModalInstance();
+  if (!state.export.modal.stage || !instance?.spine) {
+    return;
+  }
+
+  state.export.modal.stage.resetSpineTransform(instance.spine);
+  instance.zoom = 1;
+  state.export.modal.stage.renderOnce();
+  updateExportModalZoomLabels(1);
+  syncCanvasSizeOverlay(instance);
 }
 
 function getDefaultAnimation(file) {
@@ -1434,7 +1842,35 @@ function destroyPreview() {
   state.preview.isLoading = false;
   state.preview.error = '';
   state.preview.instances = [];
+  closePreviewContextMenu();
   resetActivePreviewState();
+}
+
+function destroyExportModalStage() {
+  exportResizeObserver?.disconnect();
+  exportResizeObserver = null;
+  if (exportResizeFrameId) {
+    window.cancelAnimationFrame(exportResizeFrameId);
+    exportResizeFrameId = 0;
+  }
+
+  const stage = state.export.modal.stage;
+  if (stage) {
+    stage.app.ticker.remove(handleExportModalTicker);
+    stage.destroy();
+  }
+
+  state.export.modal.stage = null;
+}
+
+function resetExportModalState() {
+  destroyExportModalStage();
+  state.export.modal.open = false;
+  state.export.modal.isLoading = false;
+  state.export.modal.error = '';
+  state.export.modal.sourceInstanceId = '';
+  state.export.modal.fileId = '';
+  state.export.modal.instance = null;
 }
 
 function handleAnimationChange(value) {
@@ -1796,8 +2232,8 @@ function bindCanvasSizeOverlayEvents() {
       return;
     }
     const handle = event.target.closest('[data-canvas-size-handle]');
-    const instance = getActivePreviewInstance();
-    if (!handle || !instance?.spine || instance.exportCanvasMode !== 'custom') {
+    const instance = getExportModalInstance();
+    if (!handle || !instance?.spine || instance.exportCanvasMode !== 'custom' || !state.export.modal.open) {
       return;
     }
 
@@ -1821,8 +2257,8 @@ function bindCanvasSizeOverlayEvents() {
       return;
     }
 
-    const instance = getPreviewInstanceById(drag.instanceId);
-    if (!instance || instance.exportCanvasMode !== 'custom') {
+    const instance = getExportModalInstance();
+    if (!instance || instance.id !== drag.instanceId || instance.exportCanvasMode !== 'custom') {
       return;
     }
 
@@ -1863,6 +2299,10 @@ function bindEvents() {
   app.addEventListener('click', async (event) => {
     const action = event.target.closest('[data-action]')?.dataset.action;
     if (!action) {
+      if (state.preview.contextMenu.open && !event.target.closest('[data-preview-context-menu]')) {
+        closePreviewContextMenu();
+        render();
+      }
       return;
     }
 
@@ -1888,6 +2328,7 @@ function bindEvents() {
     } else if (action === 'select-animation-item') {
       const animationName = event.target.closest('[data-animation-name]')?.dataset.animationName ?? '';
       handleAnimationChange(animationName);
+      closePreviewContextMenu();
     } else if (action === 'toggle-pause') {
       togglePause();
     } else if (action === 'restart-animation') {
@@ -1952,6 +2393,30 @@ function bindEvents() {
         setActivePreviewInstance(instanceId);
         render();
       }
+    } else if (action === 'open-preview-anim-list') {
+      const instanceId = state.preview.contextMenu.instanceId;
+      if (instanceId) {
+        setActivePreviewInstance(instanceId);
+        closePreviewContextMenu();
+        toggleAnimationList(true);
+      }
+    } else if (action === 'open-sprite-frame-export') {
+      const instanceId = state.preview.contextMenu.instanceId;
+      if (instanceId) {
+        await openExportModal(instanceId);
+      }
+    } else if (action === 'close-export-modal') {
+      closeExportModal();
+    } else if (action === 'toggle-export-modal-pause') {
+      toggleExportModalPause();
+    } else if (action === 'restart-export-modal-animation') {
+      restartExportModalAnimation();
+    } else if (action === 'zoom-export-modal-in') {
+      zoomExportModalBy(ZOOM_STEP);
+    } else if (action === 'zoom-export-modal-out') {
+      zoomExportModalBy(1 / ZOOM_STEP);
+    } else if (action === 'zoom-export-modal-reset') {
+      resetExportModalZoom();
     } else if (action === 'set-canvas-mode') {
       const mode = event.target.closest('[data-canvas-mode]')?.dataset.canvasMode ?? 'auto';
       setCanvasMode(mode);
@@ -1969,6 +2434,32 @@ function bindEvents() {
     } else if (action === 'open-export-folder') {
       await handleOpenExportFolder();
     }
+  });
+
+  app.addEventListener('contextmenu', (event) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+
+    const surface = event.target.closest('[data-preview-viewport], [data-preview-modal-viewport]');
+    if (!surface || !state.preview.stage || state.export.modal.open) {
+      closePreviewContextMenu();
+      render();
+      return;
+    }
+
+    const hitSpine = state.preview.stage.hitTest(event.clientX, event.clientY);
+    const instance = getPreviewInstanceBySpine(hitSpine);
+    if (!instance) {
+      closePreviewContextMenu();
+      render();
+      return;
+    }
+
+    event.preventDefault();
+    setActivePreviewInstance(instance.id);
+    openPreviewContextMenu(instance.id, event.clientX, event.clientY);
+    render();
   });
 
   app.addEventListener('dragstart', (event) => {
@@ -2085,6 +2576,8 @@ function bindEvents() {
       setBackgroundLive(target.value);
     } else if (target.matches('[data-progress]')) {
       seekAnimation(target.value);
+    } else if (target.matches('[data-export-modal-progress]')) {
+      seekExportModalAnimation(target.value);
     } else if (target.matches('[data-sequence-loop-last]')) {
       state.preview.sequenceLoopLast = target.checked;
       const instance = getActivePreviewInstance();
@@ -2108,8 +2601,12 @@ function bindEvents() {
       commitFileSearch(target.value);
     } else if (target.matches('[data-animation-select]')) {
       handleAnimationChange(target.value);
+    } else if (target.matches('[data-export-modal-animation-select]')) {
+      handleExportModalAnimationChange(target.value);
     } else if (target.matches('[data-skin-select]')) {
       handleSkinChange(target.value);
+    } else if (target.matches('[data-export-modal-skin-select]')) {
+      handleExportModalSkinChange(target.value);
     } else if (SOUND_FEATURE_ENABLED && target.matches('[data-sound-select]')) {
       setSelectedSound(target.value);
     } else if (target.matches('[data-canvas-width-input], [data-canvas-height-input]')) {
@@ -2146,13 +2643,37 @@ function bindEvents() {
   });
 
   window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && state.preview.expanded) {
-      event.preventDefault();
-      toggleExpandedPreview(false);
-      return;
+    if (event.key === 'Escape') {
+      if (state.export.modal.open) {
+        event.preventDefault();
+        closeExportModal();
+        return;
+      }
+      if (state.preview.contextMenu.open) {
+        event.preventDefault();
+        closePreviewContextMenu();
+        render();
+        return;
+      }
+      if (state.preview.expanded) {
+        event.preventDefault();
+        toggleExpandedPreview(false);
+        return;
+      }
     }
 
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) {
+      return;
+    }
+
+    if (state.export.modal.open) {
+      if (event.code === 'Space') {
+        event.preventDefault();
+        toggleExportModalPause();
+      } else if (event.key.toLowerCase() === 'r') {
+        event.preventDefault();
+        restartExportModalAnimation();
+      }
       return;
     }
 
@@ -2215,18 +2736,35 @@ function canvasSizeOverlayMarkup(instance) {
     >
       <span class="canvas-size-label canvas-size-label-width" data-canvas-size-label-width>${canvasSizeWidthLabelText(geometry)}</span>
       <span class="canvas-size-label canvas-size-label-height" data-canvas-size-label-height>${canvasSizeHeightLabelText(geometry)}</span>
-      ${isCustom ? '<div class="canvas-size-handle" data-canvas-size-handle title="Kéo để chỉnh kích thước canvas"></div>' : ''}
+      ${isCustom ? '<div class="canvas-size-handle" data-canvas-size-handle></div>' : ''}
     </div>
   `;
 }
 
 function frameExportPanelMarkup() {
+  const modalInstance = getExportModalInstance();
+  const modalFile = getExportModalFile();
   const queue = state.export.frameQueue;
   const canRegister = canRegisterFrame();
-  const activeInstance = getActivePreviewInstance();
-  const activeCanvasSize = activeInstance?.exportCanvasSize ?? { width: 0, height: 0 };
-  const activeCanvasMode = activeInstance?.exportCanvasMode ?? 'auto';
+  const activeCanvasSize = modalInstance?.exportCanvasSize ?? { width: 0, height: 0 };
+  const activeCanvasMode = modalInstance?.exportCanvasMode ?? 'auto';
   const isCustomMode = activeCanvasMode === 'custom';
+  const optionsAnimation = modalFile
+    ? modalFile.animations
+        .map(
+          (name) =>
+            `<option value="${escapeHtml(name)}" ${name === modalInstance?.currentAnimation ? 'selected' : ''}>${escapeHtml(name)}</option>`,
+        )
+        .join('')
+    : '';
+  const optionsSkin = modalFile
+    ? modalFile.skins
+        .map(
+          (name) =>
+            `<option value="${escapeHtml(name)}" ${name === modalInstance?.currentSkin ? 'selected' : ''}>${escapeHtml(name)}</option>`,
+        )
+        .join('')
+    : '';
   const items = queue
     .map(
       (item) => `
@@ -2257,25 +2795,66 @@ function frameExportPanelMarkup() {
     .join('');
 
   return `
-    <div class="sequence-panel">
-      <div class="sequence-header">
-        <span>Sprite Frame Export</span>
+    <div class="export-workspace-sidebar-panel">
+      <div class="export-workspace-sidebar-head">
+        <div>
+          <p class="eyebrow">Sprite Frame Export</p>
+          <h3>Export PNG</h3>
+        </div>
         <span>${queue.length} registered</span>
       </div>
+      <p class="export-workspace-copy">Clone này được pause sẵn để bạn chọn đúng frame, chỉnh canvas width/height rồi export PNG theo kích thước mới.</p>
+      <div class="button-row export-workspace-playback-row">
+        <button
+          class="secondary-btn control-btn playback-icon-btn"
+          data-action="toggle-export-modal-pause"
+          ${modalInstance ? '' : 'disabled'}
+          aria-label="${modalInstance?.paused ? 'Play' : 'Pause'}"
+        >
+          ${playbackToggleIconMarkupFromPaused(Boolean(modalInstance?.paused))}
+        </button>
+        <button
+          class="secondary-btn control-btn playback-icon-btn"
+          data-action="restart-export-modal-animation"
+          ${modalInstance ? '' : 'disabled'}
+          aria-label="Restart"
+        >
+          <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5.5 12a6.5 6.5 0 1 1 1.9 4.6" />
+            <path d="M5 7.5V12h4.5" />
+          </svg>
+        </button>
+        <div class="export-workspace-zoom">
+          <span>Zoom <strong data-export-modal-zoom-value>${Math.round((modalInstance?.zoom || 1) * 100)}%</strong></span>
+          <div class="button-row zoom-button-row">
+            <button class="secondary-btn control-btn" data-action="zoom-export-modal-out" ${modalInstance ? '' : 'disabled'}>-</button>
+            <button class="secondary-btn control-btn" data-action="zoom-export-modal-reset" ${modalInstance ? '' : 'disabled'}>Reset</button>
+            <button class="secondary-btn control-btn" data-action="zoom-export-modal-in" ${modalInstance ? '' : 'disabled'}>+</button>
+          </div>
+        </div>
+      </div>
+      <label class="field">
+        <span>Animation</span>
+        <select data-export-modal-animation-select ${modalInstance ? '' : 'disabled'}>${optionsAnimation}</select>
+      </label>
+      <label class="field">
+        <span>Skin</span>
+        <select data-export-modal-skin-select ${modalFile?.skins?.length ? '' : 'disabled'}>${optionsSkin}</select>
+      </label>
       <div class="canvas-mode-toggle">
         <button
           type="button"
           class="secondary-btn control-btn ${!isCustomMode ? 'active' : ''}"
           data-action="set-canvas-mode"
           data-canvas-mode="auto"
-          ${activeInstance ? '' : 'disabled'}
+          ${modalInstance ? '' : 'disabled'}
         >Auto</button>
         <button
           type="button"
           class="secondary-btn control-btn ${isCustomMode ? 'active' : ''}"
           data-action="set-canvas-mode"
           data-canvas-mode="custom"
-          ${activeInstance ? '' : 'disabled'}
+          ${modalInstance ? '' : 'disabled'}
         >Custom</button>
       </div>
       <div class="anchor-fields">
@@ -2304,7 +2883,7 @@ function frameExportPanelMarkup() {
           />
         </label>
       </div>
-      ${isCustomMode ? '<p class="canvas-size-hint">Kéo chấm ở góc khung đen trên khung preview để chỉnh trực tiếp.</p>' : ''}
+      ${isCustomMode ? '<p class="canvas-size-hint">Kéo chấm ở góc khung preview để resize trực tiếp vùng export.</p>' : ''}
       <div class="button-row">
         <button
           class="secondary-btn control-btn"
@@ -2340,6 +2919,104 @@ function frameExportPanelMarkup() {
           </div>
         `
         : ''}
+    </div>
+  `;
+}
+
+function previewContextMenuMarkup() {
+  if (!state.preview.contextMenu.open) {
+    return '';
+  }
+
+  const instance = getPreviewInstanceById(state.preview.contextMenu.instanceId);
+  const file = getPreviewFile(instance);
+  if (!instance || !file) {
+    return '';
+  }
+
+  return `
+    <div
+      class="preview-context-menu"
+      data-preview-context-menu
+      style="left:${state.preview.contextMenu.x}px;top:${state.preview.contextMenu.y}px;"
+    >
+      <button type="button" class="preview-context-action" data-action="open-preview-anim-list">
+        <span>Anim List</span>
+        <strong>${file.animations.length}</strong>
+      </button>
+      <button type="button" class="preview-context-action" data-action="open-sprite-frame-export">
+        <span>Export PNG</span>
+        <strong>${escapeHtml(spineDisplayName(file))}</strong>
+      </button>
+    </div>
+  `;
+}
+
+function exportModalMarkup() {
+  if (!state.export.modal.open) {
+    return '';
+  }
+
+  const instance = getExportModalInstance();
+  const file = getExportModalFile();
+
+  return `
+    <div class="export-workspace-modal" data-export-modal>
+      <div class="export-workspace-backdrop" data-action="close-export-modal"></div>
+      <div class="export-workspace-panel">
+        <div class="export-workspace-header">
+          <div class="export-workspace-header-copy">
+            <p class="eyebrow">Export PNG Workspace</p>
+            <h2>${file ? escapeHtml(file.fileName) : 'Preparing export clone'}</h2>
+            <p>Right panel giữ toàn bộ tool Sprite Frame Export, còn preview clone bên trái sẽ không ảnh hưởng canvas chính.</p>
+          </div>
+          <button
+            class="secondary-btn icon-btn modal-close-btn"
+            data-action="close-export-modal"
+            aria-label="Close export workspace"
+          >
+            <svg class="icon-svg" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M5 5l10 10M15 5L5 15" />
+            </svg>
+          </button>
+        </div>
+        <div class="export-workspace-body">
+          <section class="export-workspace-preview-card">
+            <div class="export-workspace-preview-stage" data-preview-bg-target>
+              <div data-export-modal-viewport class="export-workspace-viewport"></div>
+              ${state.export.modal.isLoading ? '<div class="overlay-message">Loading export clone...</div>' : ''}
+              ${state.export.modal.error ? `<div class="overlay-message">${escapeHtml(state.export.modal.error)}</div>` : ''}
+              ${instance ? canvasSizeOverlayMarkup(instance) : ''}
+            </div>
+            <div class="timeline export-workspace-timeline">
+              <div class="timeline-labels">
+                <span data-export-modal-current-animation>${escapeHtml(instance?.currentAnimation || 'None')}</span>
+                <span data-export-modal-elapsed>${formatSeconds(instance?.elapsed || 0)} / ${formatSeconds(instance?.duration || 0)}s</span>
+              </div>
+              <div class="timeline-track">
+                <div
+                  data-export-modal-progress-fill
+                  class="timeline-fill"
+                  style="width:${instance?.duration ? ((instance.elapsed || 0) / instance.duration) * 100 : 0}%"
+                ></div>
+                <input
+                  data-export-modal-progress
+                  class="timeline-range"
+                  type="range"
+                  min="0"
+                  max="${instance?.duration || 0}"
+                  step="${FRAME_STEP}"
+                  value="${snapToFrame(instance?.elapsed || 0)}"
+                  ${instance ? '' : 'disabled'}
+                >
+              </div>
+            </div>
+          </section>
+          <aside class="export-workspace-sidebar">
+            ${frameExportPanelMarkup()}
+          </aside>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -2590,7 +3267,6 @@ function previewPanelMarkup() {
           </div>
         </div>
 
-        ${frameExportPanelMarkup()}
       `
     : `
         <div class="controls-placeholder">
@@ -2644,7 +3320,6 @@ function previewPanelMarkup() {
           <div data-preview-viewport class="preview-viewport"></div>
           ${state.preview.isLoading ? '<div class="overlay-message">Loading spine...</div>' : ''}
           ${!hasFiles && !state.preview.isLoading ? '<div class="overlay-message">Chọn folder và scan để bắt đầu preview.</div>' : ''}
-          ${hasFiles && activeInstance ? canvasSizeOverlayMarkup(activeInstance) : ''}
           ${animationOverlay}
         </div>
         <div class="preview-stack-section">
@@ -3054,14 +3729,19 @@ function render() {
         </footer>
       </main>
 
+      ${previewContextMenuMarkup()}
       ${expandedPreviewMarkup()}
+      ${exportModalMarkup()}
     </div>
   `;
 
   attachStageView();
   observePreviewViewport();
+  attachExportModalStageView();
+  observeExportModalViewport();
   applyPreviewBackground();
   schedulePreviewResize();
+  scheduleExportModalResize();
 }
 
 function initialize() {
