@@ -48,7 +48,7 @@ const state = {
   currentIndex: -1,
   theme: 'dark',
   background: 'scene',
-  uiMode: 'preview',
+  uiMode: 'landing',
   loading: true,
   readyAnimating: false,
   scanning: false,
@@ -223,7 +223,13 @@ function updateSuccess(message = '') {
 }
 
 function setUiMode(mode) {
-  state.uiMode = mode === 'export' ? 'export' : 'preview';
+  if (mode === 'export') {
+    state.uiMode = 'export';
+  } else if (mode === 'preview') {
+    state.uiMode = 'preview';
+  } else {
+    state.uiMode = 'landing';
+  }
   if (state.uiMode === 'export') {
     state.preview.animationListOpen = false;
     closePreviewContextMenu();
@@ -353,8 +359,8 @@ function getExportLaneCenters() {
   }
 
   const { width, height } = stage.app.screen;
-  return [1, 3, 5].map((step) => ({
-    x: (width * step) / 6,
+  return [1, 3].map((step) => ({
+    x: (width * step) / 4,
     y: height / 2,
   }));
 }
@@ -787,7 +793,7 @@ function canRegisterFrame() {
   return Number.isFinite(instance.elapsed) && instance.elapsed >= 0;
 }
 
-function registerFrameExport() {
+async function registerFrameExport() {
   if (!canRegisterFrame()) {
     updateStatus('Pause animation ở một frame hợp lệ trước khi đăng ký export sprite frame.');
     return;
@@ -800,6 +806,24 @@ function registerFrameExport() {
   }
 
   syncDefaultExportOutputDir();
+  let previewPngDataUrl = '';
+  try {
+    previewPngDataUrl = await captureSpriteFramePng(file, {
+      skinName: instance.currentSkin,
+      animationName: instance.currentAnimation,
+      elapsedTime: instance.elapsed,
+      canvasSize: {
+        width: instance.exportCanvasMode === 'custom' ? (instance.exportCanvasSize?.width ?? 0) : 0,
+        height: instance.exportCanvasMode === 'custom' ? (instance.exportCanvasSize?.height ?? 0) : 0,
+      },
+      lockedBounds: { ...ensureCanvasAnchorBounds(instance) },
+      anchorOffset: { ...getCanvasAnchorOffset(instance) },
+    });
+  } catch (error) {
+    updateStatus(error instanceof Error ? error.message : 'Không thể render preview PNG.');
+    return;
+  }
+
   state.export.frameQueue = [
     ...state.export.frameQueue,
     {
@@ -817,6 +841,7 @@ function registerFrameExport() {
       // anchor instead of each frame re-centering on its own current pose.
       lockedBounds: { ...ensureCanvasAnchorBounds(instance) },
       anchorOffset: { ...getCanvasAnchorOffset(instance) },
+      previewPngDataUrl,
     },
   ];
   updateSuccess(`Đã đăng ký frame ${formatSeconds(instance.elapsed)}s (${instance.currentAnimation}).`);
@@ -2526,6 +2551,9 @@ function bindEvents() {
       syncDefaultExportOutputDir();
       setUiMode('export');
       schedulePreviewResize();
+    } else if (action === 'open-preview-workspace') {
+      setUiMode('preview');
+      schedulePreviewResize();
     } else if (action === 'back-to-preview') {
       setUiMode('preview');
       schedulePreviewResize();
@@ -2613,6 +2641,14 @@ function bindEvents() {
         setActivePreviewInstance(instanceId);
         closePreviewContextMenu();
         toggleAnimationList(true);
+        render();
+      }
+    } else if (action === 'register-frame-from-context') {
+      const instanceId = state.preview.contextMenu.instanceId;
+      if (instanceId) {
+        setActivePreviewInstance(instanceId);
+        closePreviewContextMenu();
+        registerFrameExport();
       }
     } else if (action === 'set-canvas-mode') {
       const mode = event.target.closest('[data-canvas-mode]')?.dataset.canvasMode ?? 'auto';
@@ -2639,7 +2675,7 @@ function bindEvents() {
     }
 
     const surface = event.target.closest('[data-preview-viewport], [data-preview-modal-viewport], [data-export-page-viewport]');
-    if (!surface || !state.preview.stage || isExportPage()) {
+    if (!surface || !state.preview.stage) {
       closePreviewContextMenu();
       render();
       return;
@@ -3087,20 +3123,6 @@ function frameExportPanelMarkup() {
         </label>
       </div>
       ${isCustomMode ? '<p class="canvas-size-hint">Kéo chấm ở góc khung preview để resize trực tiếp vùng export.</p>' : ''}
-      <div class="button-row">
-        <button
-          class="secondary-btn control-btn"
-          data-action="register-frame-export"
-          ${canRegister ? '' : 'disabled'}
-          title="${canRegister ? 'Đăng ký frame hiện tại' : 'Pause animation ở frame hợp lệ trước'}"
-        >Register Frame</button>
-        <button
-          class="secondary-btn control-btn sequence-play-btn"
-          data-action="export-frame-queue"
-          ${queue.length && !state.export.isExporting ? '' : 'disabled'}
-        >${state.export.isExporting ? 'Exporting...' : 'Export Frames (PNG)'}</button>
-        <button class="secondary-btn control-btn" data-action="clear-frame-queue" ${queue.length ? '' : 'disabled'}>Clear</button>
-      </div>
       <div class="folder-row source-row export-row">
         <input
           data-export-folder-input
@@ -3113,6 +3135,14 @@ function frameExportPanelMarkup() {
       </div>
       <div class="sequence-list">
         ${items || '<p class="sequence-empty">Chưa có frame nào được đăng ký.</p>'}
+      </div>
+      <div class="export-action-dock">
+        <button class="secondary-btn control-btn export-dock-btn export-dock-btn-danger" data-action="clear-frame-queue" ${queue.length ? '' : 'disabled'}>Clear</button>
+        <button
+          class="primary-btn accent export-dock-btn export-dock-btn-primary"
+          data-action="export-frame-queue"
+          ${queue.length && !state.export.isExporting ? '' : 'disabled'}
+        >${state.export.isExporting ? 'Exporting...' : 'Export'}</button>
       </div>
       ${state.export.lastSummary
         ? `
@@ -3143,10 +3173,24 @@ function previewContextMenuMarkup() {
       data-preview-context-menu
       style="left:${state.preview.contextMenu.x}px;top:${state.preview.contextMenu.y}px;"
     >
-      <button type="button" class="preview-context-action" data-action="open-preview-anim-list">
-        <span>Anim List</span>
-        <strong>${file.animations.length}</strong>
-      </button>
+      ${isExportPage()
+        ? `
+          <button
+            type="button"
+            class="preview-context-action"
+            data-action="register-frame-from-context"
+            ${canRegisterFrame() ? '' : 'disabled'}
+          >
+            <span>Register Frame</span>
+            <strong>${formatSeconds(instance.elapsed)}s</strong>
+          </button>
+        `
+        : `
+          <button type="button" class="preview-context-action" data-action="open-preview-anim-list">
+            <span>Anim List</span>
+            <strong>${file.animations.length}</strong>
+          </button>
+        `}
     </div>
   `;
 }
@@ -3606,6 +3650,7 @@ function exportPageMarkup() {
   const activeInstance = getActivePreviewInstance();
   const activeFile = getPreviewFile(activeInstance);
   const hasFiles = Boolean(activeInstance && activeFile);
+  const registeredFrames = state.export.frameQueue.filter((item) => item.previewPngDataUrl);
   const laneGuides = getExportLaneCenters()
     .map(
       (lane, index) => `
@@ -3627,14 +3672,57 @@ function exportPageMarkup() {
             <p class="eyebrow">Export PNG</p>
             <h2>Anchor Compare Workspace</h2>
           </div>
-          <p class="export-workspace-copy">Drag & drop spine vào 1 trong 3 lane để so sánh anchor. Các spine sẽ luôn nằm giữa trục Y và có thể overlap trong cùng lane.</p>
+          <p class="export-workspace-copy">Lane 1 và Lane 2 dùng để kéo spine vào so sánh anchor. Khu PNG Review bên phải sẽ chồng các frame đã register để kiểm tra sprite đã khớp nhau chưa.</p>
         </div>
-        <div class="export-workspace-preview-stage" data-preview-bg-target data-preview-dropzone>
-          <div data-export-page-viewport class="export-workspace-viewport"></div>
-          ${laneGuides}
-          ${state.preview.isLoading ? '<div class="overlay-message">Loading spine...</div>' : ''}
-          ${!hasFiles && !state.preview.isLoading ? '<div class="overlay-message">Drag & drop spine vào 3 lane để bắt đầu so sánh.</div>' : ''}
-          ${hasFiles ? canvasOverlayInstances(activeInstance).map((instance) => canvasSizeOverlayMarkup(instance, instance.id === activeInstance?.id)).join('') : ''}
+        <div class="export-workspace-body">
+          <div class="export-workspace-stage-group">
+            <div class="export-workspace-stage-head">
+              <span>Spine Compare</span>
+              <strong>2 lanes</strong>
+            </div>
+            <div class="export-workspace-preview-stage" data-preview-bg-target data-preview-dropzone>
+              <div data-export-page-viewport class="export-workspace-viewport"></div>
+              ${laneGuides}
+              ${state.preview.isLoading ? '<div class="overlay-message">Loading spine...</div>' : ''}
+              ${!hasFiles && !state.preview.isLoading ? '<div class="overlay-message">Drag & drop spine vào lane 1 hoặc lane 2 để bắt đầu so sánh.</div>' : ''}
+              ${hasFiles ? canvasOverlayInstances(activeInstance).map((instance) => canvasSizeOverlayMarkup(instance, instance.id === activeInstance?.id)).join('') : ''}
+            </div>
+          </div>
+          <div class="export-png-review-card">
+            <div class="export-workspace-stage-head export-png-review-head">
+              <span>PNG Review</span>
+              <strong>${registeredFrames.length} frames</strong>
+            </div>
+            <div class="export-png-review-stage">
+              ${registeredFrames.length
+                ? `
+                  <div class="export-png-review-stack">
+                    ${registeredFrames.map((item, index) => `
+                      <div
+                        class="export-png-review-item"
+                        style="z-index:${index + 1};"
+                      >
+                        <img
+                          src="${escapeHtml(item.previewPngDataUrl)}"
+                          alt="${escapeHtml(item.customName || item.fileName)}"
+                        />
+                      </div>
+                    `).join('')}
+                  </div>
+                `
+                : '<div class="overlay-message export-png-review-empty">Register Frame để xem PNG preview chồng lên nhau tại đây.</div>'}
+            </div>
+            <div class="export-png-review-list">
+              ${registeredFrames.length
+                ? registeredFrames.map((item) => `
+                  <div class="export-png-review-chip">
+                    <span>${escapeHtml(item.customName || item.fileName)}</span>
+                    <strong>${escapeHtml(item.animationName)}</strong>
+                  </div>
+                `).join('')
+                : '<p class="preview-stack-empty">Chưa có frame nào được đưa vào khu PNG Review.</p>'}
+            </div>
+          </div>
         </div>
         <div class="timeline export-workspace-timeline">
           <div class="timeline-labels">
@@ -3685,13 +3773,54 @@ function exportPageMarkup() {
                   </div>
                 `;
               }).join('')}</div>`
-            : '<p class="preview-stack-empty">Thả nhiều spine vào 3 lane để so sánh độ lệch anchor trước khi export lại PNG.</p>'}
+            : '<p class="preview-stack-empty">Thả nhiều spine vào 2 lane để so sánh độ lệch anchor trước khi export lại PNG.</p>'}
         </div>
       </div>
 
       <aside class="export-workspace-sidebar">
         ${frameExportPanelMarkup()}
       </aside>
+    </section>
+  `;
+}
+
+function landingPageMarkup() {
+  return `
+    <section class="mode-landing-grid mode-landing-grid-standalone">
+      <button
+        type="button"
+        class="mode-landing-card mode-landing-card-preview"
+        data-action="open-preview-workspace"
+      >
+        <span class="mode-landing-orbit mode-landing-orbit-a" aria-hidden="true"></span>
+        <span class="mode-landing-orbit mode-landing-orbit-b" aria-hidden="true"></span>
+        <span class="mode-landing-gridline" aria-hidden="true"></span>
+        <span class="mode-landing-kicker">Workspace 01</span>
+        <strong>Preview Anim</strong>
+        <p>Preview nhiều spine trong cùng một canvas, kéo thả tự do, canh bố cục và kiểm tra animation nhanh trước khi xử lý sâu hơn.</p>
+        <div class="mode-landing-meta" aria-hidden="true">
+          <span>Multi Spine</span>
+          <span>Drag & Drop</span>
+          <span>Live Layout</span>
+        </div>
+      </button>
+      <button
+        type="button"
+        class="mode-landing-card mode-landing-card-export"
+        data-action="open-export-workspace"
+      >
+        <span class="mode-landing-orbit mode-landing-orbit-a" aria-hidden="true"></span>
+        <span class="mode-landing-orbit mode-landing-orbit-b" aria-hidden="true"></span>
+        <span class="mode-landing-gridline" aria-hidden="true"></span>
+        <span class="mode-landing-kicker">Workspace 02</span>
+        <strong>Export PNG</strong>
+        <p>So sánh anchor giữa nhiều spine, register frame cần thiết và review PNG chồng lớp để phát hiện sprite còn lệch hay đã khớp.</p>
+        <div class="mode-landing-meta" aria-hidden="true">
+          <span>Anchor Check</span>
+          <span>PNG Review</span>
+          <span>Frame Export</span>
+        </div>
+      </button>
     </section>
   `;
 }
@@ -3840,6 +3969,9 @@ function render() {
       </div>
 
       <main class="main-layout">
+        ${state.uiMode === 'landing'
+          ? ''
+          : `
         <section class="hero-card">
           <div class="hero-header">
             <div>
@@ -3933,24 +4065,31 @@ function render() {
               <div class="spine-chip-list">
                 ${spineButtons}
               </div>
-              <div class="hero-mode-actions">
-                <button
-                  class="secondary-btn export-entry-btn hero-mode-btn"
-                  data-action="${state.uiMode === 'export' ? 'back-to-preview' : 'open-export-workspace'}"
-                >
-                  ${state.uiMode === 'export' ? 'Preview Anim' : 'Export PNG'}
-                </button>
-              </div>
+              ${state.uiMode !== 'landing'
+                ? `
+                  <div class="hero-mode-actions">
+                    <button
+                      class="secondary-btn export-entry-btn hero-mode-btn"
+                      data-action="${state.uiMode === 'export' ? 'back-to-preview' : 'open-export-workspace'}"
+                    >
+                      ${state.uiMode === 'export' ? 'Preview Anim' : 'Export PNG'}
+                    </button>
+                  </div>
+                `
+                : ''}
             `
             : ''}
 
           ${state.error ? `<div class="status error">${escapeHtml(state.error)}</div>` : ''}
         </section>
+        `}
 
-        ${state.uiMode === 'preview' ? previewPanelMarkup() : exportPageMarkup()}
+        ${state.uiMode === 'landing'
+          ? landingPageMarkup()
+          : (state.uiMode === 'preview' ? previewPanelMarkup() : exportPageMarkup())}
 
         <footer class="app-footer">
-          <p>Prompted by TiTi</p>
+          <p>POWERED BY TITI X BESDEN</p>
         </footer>
       </main>
 
