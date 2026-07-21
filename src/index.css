@@ -2043,6 +2043,18 @@ select:disabled {
   font-size: 12px;
 }
 
+.canvas-mode-toggle {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.canvas-mode-toggle .active {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--text);
+}
+
 .anchor-fields {
   display: flex;
   align-items: flex-end;
@@ -2072,66 +2084,62 @@ select:disabled {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 64%, transparent);
 }
 
-.anchor-canvas-panel {
-  margin-top: 12px;
-  padding: 12px;
-  border-radius: 12px;
-  background: var(--sequence-item-bg);
-  border: 1px solid var(--sequence-item-line);
-}
-
-.anchor-canvas-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
+.canvas-size-hint {
+  margin: 8px 0 0;
   color: var(--muted);
   font-size: 12px;
 }
 
-.anchor-canvas-frame {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 180px;
-  border-radius: 10px;
-  overflow: hidden;
-  background: repeating-conic-gradient(#9aa3ad 0% 25%, #cdd4db 0% 50%) 50% / 20px 20px;
-}
-
-/* Sized to exactly wrap the (scaled) image, so the marker's percentage
-   position lines up with real image pixels instead of the frame's padding. */
-.anchor-canvas-stage {
-  position: relative;
-  display: inline-flex;
-  max-width: 100%;
-}
-
-.anchor-canvas-image {
-  display: block;
-  max-width: 100%;
-  max-height: 320px;
-  width: auto;
-  height: auto;
-}
-
-.anchor-canvas-marker {
+/* Lives directly on the main preview viewport (not a side panel), positioned
+   in real screen px by JS to track the spine's on-screen bounds/zoom. */
+.canvas-size-box {
   position: absolute;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid #fff;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent), 0 1px 4px rgba(0, 0, 0, 0.35);
-  transform: translate(-50%, -50%);
+  z-index: 3;
+  border: 2px solid #000;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
   pointer-events: none;
 }
 
-.anchor-canvas-empty {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
+.canvas-size-label {
+  position: absolute;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Sits just above the box (outside it), centered on the top edge — reads
+   with the width without covering the character underneath. */
+.canvas-size-label-width {
+  left: 50%;
+  bottom: 100%;
+  margin-bottom: 6px;
+  transform: translateX(-50%);
+}
+
+/* Sits just to the left of the box (outside it), centered on the left
+   edge — reads with the height. */
+.canvas-size-label-height {
+  right: 100%;
+  top: 50%;
+  margin-right: 6px;
+  transform: translateY(-50%);
+}
+
+.canvas-size-handle {
+  position: absolute;
+  right: -9px;
+  bottom: -9px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #000;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  cursor: nwse-resize;
+  pointer-events: auto;
 }
 
 .frame-export-summary {

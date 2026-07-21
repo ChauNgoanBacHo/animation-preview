@@ -90,8 +90,6 @@ const state = {
     lastSummary: '',
     lastOutputDir: '',
     frameQueue: [],
-    anchorCanvasOpen: false,
-    anchorSnapshot: null,
   },
   draggingFileId: '',
   previewRequestId: 0,
@@ -265,7 +263,8 @@ function createPreviewInstance(fileId) {
     sequenceDurations: null,
     sequenceStep: 0,
     sequenceCleanup: null,
-    exportAnchor: { x: 0.5, y: 0.5 },
+    exportCanvasMode: 'auto',
+    exportCanvasSize: { width: 0, height: 0 },
   };
 }
 
@@ -534,37 +533,36 @@ async function exportFileToSpinePackageData(file, anchor, options = {}) {
   };
 }
 
-// Pads the canvas asymmetrically around the anchor point so the anchor lands
-// exactly at the output image's center — mirrors how the flattened-package
-// exporter bakes pivot into the JSON offset, but for a plain PNG there's no
-// JSON to carry it, so the pixels themselves have to encode it.
-function bakeAnchorIntoCanvas(canvas, anchorPxX, anchorPxY) {
-  const width = canvas.width;
-  const height = canvas.height;
-  const halfWidth = Math.max(anchorPxX, width - anchorPxX);
-  const halfHeight = Math.max(anchorPxY, height - anchorPxY);
-  const offsetX = halfWidth - anchorPxX;
-  const offsetY = halfHeight - anchorPxY;
+// Resizes the canvas to exactly the requested size, keeping the character
+// centered (anchor is always canvas-center). A size smaller than the
+// natural render crops evenly from all sides instead of being ignored —
+// canvasWidth/Height of 0 (or blank) means "auto" (use the natural render).
+function fitCanvasToSize(canvas, canvasWidth, canvasHeight) {
+  const requestedWidth = Math.round(canvasWidth) || 0;
+  const requestedHeight = Math.round(canvasHeight) || 0;
+  const outWidth = Math.max(1, requestedWidth > 0 ? requestedWidth : canvas.width);
+  const outHeight = Math.max(1, requestedHeight > 0 ? requestedHeight : canvas.height);
 
-  if (offsetX === 0 && offsetY === 0 && width === Math.ceil(halfWidth * 2) && height === Math.ceil(halfHeight * 2)) {
+  if (outWidth === canvas.width && outHeight === canvas.height) {
     return canvas;
   }
 
   const output = document.createElement('canvas');
-  output.width = Math.max(1, Math.ceil(halfWidth * 2));
-  output.height = Math.max(1, Math.ceil(halfHeight * 2));
-  output.getContext('2d').drawImage(canvas, offsetX, offsetY);
+  output.width = outWidth;
+  output.height = outHeight;
+  output.getContext('2d').drawImage(
+    canvas,
+    Math.round((outWidth - canvas.width) / 2),
+    Math.round((outHeight - canvas.height) / 2),
+  );
   return output;
 }
 
 async function captureSpriteFramePng(file, options = {}) {
   const { canvas } = await renderSpinePoseToCanvas(file, options);
-  const anchor = options.anchor ?? { x: 0.5, y: 0.5 };
-  // Anchor is a fraction of the exported canvas itself (0,0 = top-left,
-  // 1,1 = bottom-right) — matches the raw percentage shown in the numeric
-  // fields and the marker on the static snapshot exactly, pixel for pixel.
-  const baked = bakeAnchorIntoCanvas(canvas, anchor.x * canvas.width, anchor.y * canvas.height);
-  return baked.toDataURL('image/png');
+  const size = options.canvasSize ?? { width: 0, height: 0 };
+  const fitted = fitCanvasToSize(canvas, size.width, size.height);
+  return fitted.toDataURL('image/png');
 }
 
 function dedupeFileNames(names) {
@@ -686,66 +684,117 @@ function registerFrameExport() {
       skinName: instance.currentSkin,
       elapsed: instance.elapsed,
       customName: spineDisplayName(file),
-      anchorX: instance.exportAnchor?.x ?? 0.5,
-      anchorY: instance.exportAnchor?.y ?? 0.5,
+      canvasWidth: instance.exportCanvasMode === 'custom' ? (instance.exportCanvasSize?.width ?? 0) : 0,
+      canvasHeight: instance.exportCanvasMode === 'custom' ? (instance.exportCanvasSize?.height ?? 0) : 0,
     },
   ];
   updateSuccess(`Đã đăng ký frame ${formatSeconds(instance.elapsed)}s (${instance.currentAnimation}).`);
 }
 
-function setActiveAnchorValue(axis, rawValue) {
+function setActiveCanvasSizeValue(axis, rawValue) {
   const instance = getActivePreviewInstance();
   if (!instance) {
     return;
   }
 
-  const percent = Number(rawValue);
-  const normalized = Number.isFinite(percent)
-    ? Math.max(0, Math.min(100, percent)) / 100
-    : instance.exportAnchor[axis];
-  instance.exportAnchor = { ...instance.exportAnchor, [axis]: normalized };
-
-  // Patch the marker/readout directly instead of calling render(), so typing
-  // a multi-digit percentage doesn't blow away input focus on every keystroke.
-  const marker = document.querySelector('[data-anchor-canvas-marker]');
-  if (marker) {
-    marker.style.left = `${instance.exportAnchor.x * 100}%`;
-    marker.style.top = `${instance.exportAnchor.y * 100}%`;
-  }
+  const value = Number(rawValue);
+  const normalized = Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+  instance.exportCanvasSize = { ...instance.exportCanvasSize, [axis]: normalized };
 }
 
-function toggleAnchorCanvasTab() {
-  state.export.anchorCanvasOpen = !state.export.anchorCanvasOpen;
-  render();
-  if (state.export.anchorCanvasOpen) {
-    refreshAnchorSnapshot();
+// The export canvas is always the tight spine bounds plus the fixed export
+// padding — matches renderSpinePoseToCanvas()'s sizing exactly, so this is
+// the "auto" / minimum size on both the numeric fields and the live overlay.
+function naturalExportSize(instance) {
+  if (!instance?.spine) {
+    return { width: 0, height: 0 };
   }
+
+  const bounds = instance.spine.getLocalBounds();
+  return {
+    width: Math.max(2, Math.ceil(bounds.width + EXPORT_PADDING_PX * 2)),
+    height: Math.max(2, Math.ceil(bounds.height + EXPORT_PADDING_PX * 2)),
+  };
 }
 
-async function refreshAnchorSnapshot() {
+function setCanvasMode(mode) {
   const instance = getActivePreviewInstance();
-  const file = getPreviewFile(instance);
-  if (!instance?.spine || !file) {
-    state.export.anchorSnapshot = null;
-    render();
+  if (!instance) {
     return;
   }
 
-  try {
-    const { canvas } = await renderSpinePoseToCanvas(file, {
-      skinName: instance.currentSkin,
-      animationName: instance.currentAnimation,
-      elapsedTime: instance.elapsed,
-    });
-    state.export.anchorSnapshot = {
-      dataUrl: canvas.toDataURL('image/png'),
-      instanceId: instance.id,
-    };
-  } catch (error) {
-    state.export.anchorSnapshot = null;
-    updateStatus(error instanceof Error ? error.message : 'Không thể tạo anchor canvas snapshot.');
+  const nextMode = mode === 'custom' ? 'custom' : 'auto';
+  const hasNoSize = !instance.exportCanvasSize.width && !instance.exportCanvasSize.height;
+  if (nextMode === 'custom' && hasNoSize) {
+    // Start the box matching the character exactly, instead of collapsed to 0.
+    instance.exportCanvasSize = naturalExportSize(instance);
   }
+  instance.exportCanvasMode = nextMode;
   render();
+}
+
+// Screen-space box geometry for the live overlay: box stays centered on the
+// spine's on-screen bounds, sized in real export pixels but drawn at the
+// instance's current zoom so it lines up with what's on screen.
+function computeCanvasBoxGeometry(instance) {
+  if (!instance?.spine) {
+    return null;
+  }
+
+  const bounds = instance.spine.getBounds();
+  const zoom = instance.zoom || 1;
+  const natural = naturalExportSize(instance);
+  const size = instance.exportCanvasSize ?? { width: 0, height: 0 };
+  // 0/blank means auto (natural size); any explicit value is honored exactly,
+  // including shrinking below natural — the box (and the real export) crops.
+  const realWidth = size.width > 0 ? size.width : natural.width;
+  const realHeight = size.height > 0 ? size.height : natural.height;
+  const screenWidth = realWidth * zoom;
+  const screenHeight = realHeight * zoom;
+  const centerX = bounds.x + bounds.width / 2;
+  const centerY = bounds.y + bounds.height / 2;
+
+  return {
+    left: centerX - screenWidth / 2,
+    top: centerY - screenHeight / 2,
+    width: screenWidth,
+    height: screenHeight,
+    realWidth,
+    realHeight,
+  };
+}
+
+function canvasSizeWidthLabelText(geometry) {
+  return `W ${Math.round(geometry.realWidth)}px`;
+}
+
+function canvasSizeHeightLabelText(geometry) {
+  return `H ${Math.round(geometry.realHeight)}px`;
+}
+
+function syncCanvasSizeOverlay(instance) {
+  const box = document.querySelector('[data-canvas-size-box]');
+  if (!box || !instance?.spine) {
+    return;
+  }
+
+  const geometry = computeCanvasBoxGeometry(instance);
+  if (!geometry) {
+    return;
+  }
+
+  box.style.left = `${geometry.left}px`;
+  box.style.top = `${geometry.top}px`;
+  box.style.width = `${Math.max(1, geometry.width)}px`;
+  box.style.height = `${Math.max(1, geometry.height)}px`;
+  const widthLabel = box.querySelector('[data-canvas-size-label-width]');
+  if (widthLabel) {
+    widthLabel.textContent = canvasSizeWidthLabelText(geometry);
+  }
+  const heightLabel = box.querySelector('[data-canvas-size-label-height]');
+  if (heightLabel) {
+    heightLabel.textContent = canvasSizeHeightLabelText(geometry);
+  }
 }
 
 function removeFrameExport(frameId) {
@@ -812,7 +861,7 @@ async function handleExportFrameQueue() {
         skinName: item.skinName,
         animationName: item.animationName,
         elapsedTime: item.elapsed,
-        anchor: { x: item.anchorX ?? 0.5, y: item.anchorY ?? 0.5 },
+        canvasSize: { width: item.canvasWidth ?? 0, height: item.canvasHeight ?? 0 },
       });
       payloadFiles.push({ fileName: `${uniqueNames[index]}.png`, pngDataUrl });
     }
@@ -829,7 +878,7 @@ async function handleExportFrameQueue() {
 
     state.export.frameQueue = [];
     state.export.lastOutputDir = outputDir;
-    state.export.lastSummary = `Đã export ${result.writtenFiles.length} sprite frame vào ${outputDir}.`;
+    state.export.lastSummary = `✓ Đã xuất ${result.writtenFiles.length} file.`;
     updateSuccess(state.export.lastSummary);
   } catch (error) {
     updateStatus(error instanceof Error ? error.message : 'Không thể export sprite frame.');
@@ -1363,6 +1412,8 @@ function handleTicker() {
   if (fill) {
     fill.setAttribute('style', `width:${ratio * 100}%`);
   }
+
+  syncCanvasSizeOverlay(activeInstance);
 }
 
 function destroyPreview() {
@@ -1722,8 +1773,86 @@ function bindPanEvents() {
   window.addEventListener('pointercancel', endPan);
 }
 
+function bindCanvasSizeOverlayEvents() {
+  const drag = {
+    active: false,
+    pointerId: null,
+    instanceId: '',
+    startX: 0,
+    startY: 0,
+    startWidth: 0,
+    startHeight: 0,
+    zoom: 1,
+  };
+
+  app.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    const handle = event.target.closest('[data-canvas-size-handle]');
+    const instance = getActivePreviewInstance();
+    if (!handle || !instance?.spine || instance.exportCanvasMode !== 'custom') {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const natural = naturalExportSize(instance);
+    const size = instance.exportCanvasSize ?? { width: 0, height: 0 };
+    drag.active = true;
+    drag.pointerId = event.pointerId;
+    drag.instanceId = instance.id;
+    drag.startX = event.clientX;
+    drag.startY = event.clientY;
+    drag.startWidth = size.width > 0 ? size.width : natural.width;
+    drag.startHeight = size.height > 0 ? size.height : natural.height;
+    drag.zoom = instance.zoom || 1;
+  });
+
+  window.addEventListener('pointermove', (event) => {
+    if (!drag.active || event.pointerId !== drag.pointerId) {
+      return;
+    }
+
+    const instance = getPreviewInstanceById(drag.instanceId);
+    if (!instance || instance.exportCanvasMode !== 'custom') {
+      return;
+    }
+
+    // Box stays centered on the character, so dragging a corner by dx grows
+    // both sides — total width grows by 2 * dx (converted from screen to
+    // real export pixels via the current zoom level). Only a 1px floor —
+    // dragging below the natural size crops, that's an intentional option.
+    const dx = (event.clientX - drag.startX) / drag.zoom;
+    const dy = (event.clientY - drag.startY) / drag.zoom;
+    const width = Math.max(1, Math.round(drag.startWidth + dx * 2));
+    const height = Math.max(1, Math.round(drag.startHeight + dy * 2));
+    instance.exportCanvasSize = { width, height };
+
+    syncCanvasSizeOverlay(instance);
+    const widthInput = document.querySelector('[data-canvas-width-input]');
+    const heightInput = document.querySelector('[data-canvas-height-input]');
+    if (widthInput) widthInput.value = String(width);
+    if (heightInput) heightInput.value = String(height);
+  });
+
+  const endResize = (event) => {
+    if (!drag.active || (event.pointerId !== undefined && event.pointerId !== drag.pointerId)) {
+      return;
+    }
+    drag.active = false;
+    drag.pointerId = null;
+    drag.instanceId = '';
+  };
+
+  window.addEventListener('pointerup', endResize);
+  window.addEventListener('pointercancel', endResize);
+}
+
 function bindEvents() {
   bindPanEvents();
+  bindCanvasSizeOverlayEvents();
 
   app.addEventListener('click', async (event) => {
     const action = event.target.closest('[data-action]')?.dataset.action;
@@ -1817,6 +1946,9 @@ function bindEvents() {
         setActivePreviewInstance(instanceId);
         render();
       }
+    } else if (action === 'set-canvas-mode') {
+      const mode = event.target.closest('[data-canvas-mode]')?.dataset.canvasMode ?? 'auto';
+      setCanvasMode(mode);
     } else if (action === 'register-frame-export') {
       registerFrameExport();
     } else if (action === 'remove-frame-export') {
@@ -1830,10 +1962,6 @@ function bindEvents() {
       await handleExportFrameQueue();
     } else if (action === 'open-export-folder') {
       await handleOpenExportFolder();
-    } else if (action === 'toggle-anchor-canvas') {
-      toggleAnchorCanvasTab();
-    } else if (action === 'refresh-anchor-canvas') {
-      await refreshAnchorSnapshot();
     }
   });
 
@@ -1932,10 +2060,10 @@ function bindEvents() {
       state.export.anchorX = target.value;
     } else if (target.matches('[data-export-anchor-y]')) {
       state.export.anchorY = target.value;
-    } else if (target.matches('[data-anchor-x-input]')) {
-      setActiveAnchorValue('x', target.value);
-    } else if (target.matches('[data-anchor-y-input]')) {
-      setActiveAnchorValue('y', target.value);
+    } else if (target.matches('[data-canvas-width-input]')) {
+      setActiveCanvasSizeValue('width', target.value);
+    } else if (target.matches('[data-canvas-height-input]')) {
+      setActiveCanvasSizeValue('height', target.value);
     } else if (target.matches('[data-frame-name-input]')) {
       const frameId = target.closest('[data-frame-export-id]')?.dataset.frameExportId ?? '';
       if (frameId) {
@@ -1978,7 +2106,7 @@ function bindEvents() {
       handleSkinChange(target.value);
     } else if (SOUND_FEATURE_ENABLED && target.matches('[data-sound-select]')) {
       setSelectedSound(target.value);
-    } else if (target.matches('[data-anchor-x-input], [data-anchor-y-input]')) {
+    } else if (target.matches('[data-canvas-width-input], [data-canvas-height-input]')) {
       render();
     }
   });
@@ -2065,28 +2193,23 @@ function backgroundPickerMarkup() {
   `;
 }
 
-function anchorCanvasMarkup() {
-  const instance = getActivePreviewInstance();
-  const snapshot = state.export.anchorSnapshot;
-  const anchor = instance?.exportAnchor ?? { x: 0.5, y: 0.5 };
-  const hasSnapshot = Boolean(snapshot && instance && snapshot.instanceId === instance.id);
+function canvasSizeOverlayMarkup(instance) {
+  const geometry = computeCanvasBoxGeometry(instance);
+  if (!geometry) {
+    return '';
+  }
+
+  const isCustom = instance.exportCanvasMode === 'custom';
 
   return `
-    <div class="anchor-canvas-panel">
-      <div class="anchor-canvas-toolbar">
-        <span>Static snapshot toàn bộ spine ở frame hiện tại, dùng để canh anchor cho chính xác.</span>
-        <button type="button" class="secondary-btn control-btn" data-action="refresh-anchor-canvas" ${instance ? '' : 'disabled'}>Refresh</button>
-      </div>
-      <div class="anchor-canvas-frame">
-        ${hasSnapshot
-          ? `
-            <div class="anchor-canvas-stage">
-              <img class="anchor-canvas-image" src="${snapshot.dataUrl}" alt="Spine snapshot" />
-              <div class="anchor-canvas-marker" data-anchor-canvas-marker style="left:${anchor.x * 100}%;top:${anchor.y * 100}%;"></div>
-            </div>
-          `
-          : '<p class="anchor-canvas-empty">Bấm Refresh để chụp pose hiện tại.</p>'}
-      </div>
+    <div
+      class="canvas-size-box"
+      data-canvas-size-box
+      style="left:${geometry.left}px;top:${geometry.top}px;width:${Math.max(1, geometry.width)}px;height:${Math.max(1, geometry.height)}px;"
+    >
+      <span class="canvas-size-label canvas-size-label-width" data-canvas-size-label-width>${canvasSizeWidthLabelText(geometry)}</span>
+      <span class="canvas-size-label canvas-size-label-height" data-canvas-size-label-height>${canvasSizeHeightLabelText(geometry)}</span>
+      ${isCustom ? '<div class="canvas-size-handle" data-canvas-size-handle title="Kéo để chỉnh kích thước canvas"></div>' : ''}
     </div>
   `;
 }
@@ -2095,7 +2218,9 @@ function frameExportPanelMarkup() {
   const queue = state.export.frameQueue;
   const canRegister = canRegisterFrame();
   const activeInstance = getActivePreviewInstance();
-  const activeAnchor = activeInstance?.exportAnchor ?? { x: 0.5, y: 0.5 };
+  const activeCanvasSize = activeInstance?.exportCanvasSize ?? { width: 0, height: 0 };
+  const activeCanvasMode = activeInstance?.exportCanvasMode ?? 'auto';
+  const isCustomMode = activeCanvasMode === 'custom';
   const items = queue
     .map(
       (item) => `
@@ -2108,7 +2233,7 @@ function frameExportPanelMarkup() {
             value="${escapeHtml(item.customName ?? item.fileName)}"
             placeholder="${escapeHtml(item.fileName)}"
           />
-          <span class="frame-export-meta">${escapeHtml(item.animationName)} @ ${formatSeconds(item.elapsed)}s · anchor ${Math.round((item.anchorX ?? 0.5) * 100)}%,${Math.round((item.anchorY ?? 0.5) * 100)}%</span>
+          <span class="frame-export-meta">${escapeHtml(item.animationName)} @ ${formatSeconds(item.elapsed)}s</span>
           <button
             class="sequence-remove"
             data-action="remove-frame-export"
@@ -2131,39 +2256,49 @@ function frameExportPanelMarkup() {
         <span>Sprite Frame Export</span>
         <span>${queue.length} registered</span>
       </div>
-      <div class="anchor-fields">
-        <label class="field anchor-field">
-          <span>Anchor X (%)</span>
-          <input
-            type="number"
-            min="0"
-            max="100"
-            step="1"
-            data-anchor-x-input
-            value="${Math.round(activeAnchor.x * 100)}"
-            ${activeInstance ? '' : 'disabled'}
-          />
-        </label>
-        <label class="field anchor-field">
-          <span>Anchor Y (%)</span>
-          <input
-            type="number"
-            min="0"
-            max="100"
-            step="1"
-            data-anchor-y-input
-            value="${Math.round(activeAnchor.y * 100)}"
-            ${activeInstance ? '' : 'disabled'}
-          />
-        </label>
+      <div class="canvas-mode-toggle">
         <button
           type="button"
-          class="secondary-btn control-btn anchor-canvas-toggle"
-          data-action="toggle-anchor-canvas"
+          class="secondary-btn control-btn ${!isCustomMode ? 'active' : ''}"
+          data-action="set-canvas-mode"
+          data-canvas-mode="auto"
           ${activeInstance ? '' : 'disabled'}
-        >${state.export.anchorCanvasOpen ? 'Ẩn' : 'Mở'} Anchor Canvas</button>
+        >Auto</button>
+        <button
+          type="button"
+          class="secondary-btn control-btn ${isCustomMode ? 'active' : ''}"
+          data-action="set-canvas-mode"
+          data-canvas-mode="custom"
+          ${activeInstance ? '' : 'disabled'}
+        >Custom</button>
       </div>
-      ${state.export.anchorCanvasOpen ? anchorCanvasMarkup() : ''}
+      <div class="anchor-fields">
+        <label class="field anchor-field">
+          <span>Canvas Width (px)</span>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            data-canvas-width-input
+            placeholder="auto"
+            value="${activeCanvasSize.width || ''}"
+            ${isCustomMode ? '' : 'disabled'}
+          />
+        </label>
+        <label class="field anchor-field">
+          <span>Canvas Height (px)</span>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            data-canvas-height-input
+            placeholder="auto"
+            value="${activeCanvasSize.height || ''}"
+            ${isCustomMode ? '' : 'disabled'}
+          />
+        </label>
+      </div>
+      ${isCustomMode ? '<p class="canvas-size-hint">Kéo chấm ở góc khung đen trên khung preview để chỉnh trực tiếp.</p>' : ''}
       <div class="button-row">
         <button
           class="secondary-btn control-btn"
@@ -2503,6 +2638,7 @@ function previewPanelMarkup() {
           <div data-preview-viewport class="preview-viewport"></div>
           ${state.preview.isLoading ? '<div class="overlay-message">Loading spine...</div>' : ''}
           ${!hasFiles && !state.preview.isLoading ? '<div class="overlay-message">Chọn folder và scan để bắt đầu preview.</div>' : ''}
+          ${hasFiles && activeInstance ? canvasSizeOverlayMarkup(activeInstance) : ''}
           ${animationOverlay}
         </div>
         <div class="preview-stack-section">
