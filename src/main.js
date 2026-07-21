@@ -364,6 +364,26 @@ async function saveBatchSpineExportFiles(outputDir, files) {
   return writtenFiles;
 }
 
+// Overwrites silently if the file already exists (default writeFile mode,
+// no exclusive flag) — retries a couple times first, since re-exporting a
+// name that's still open in another program (Cocos, an image viewer, AV
+// scanning a fresh write) trips a transient EBUSY/EPERM on Windows.
+async function writeFileReplacing(filePath, buffer) {
+  const attempts = 3;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await fs.promises.writeFile(filePath, buffer);
+      return;
+    } catch (error) {
+      const isLocked = error.code === 'EBUSY' || error.code === 'EPERM' || error.code === 'EACCES';
+      if (!isLocked || attempt === attempts) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
+    }
+  }
+}
+
 async function saveBatchSpriteFramePngs(outputDir, files) {
   const writtenFiles = [];
 
@@ -377,7 +397,7 @@ async function saveBatchSpriteFramePngs(outputDir, files) {
     const safeName = path.basename(file.fileName);
     const pngPath = path.join(outputDir, safeName);
     const base64 = String(file.pngDataUrl).replace(/^data:image\/png;base64,/, '');
-    await fs.promises.writeFile(pngPath, Buffer.from(base64, 'base64'));
+    await writeFileReplacing(pngPath, Buffer.from(base64, 'base64'));
     writtenFiles.push(pngPath);
   }
 

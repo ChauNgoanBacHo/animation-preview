@@ -2322,6 +2322,14 @@ select:disabled {
   pointer-events: none;
 }
 
+/* Registered-frame reminder for a spine that isn't the active one anymore —
+   dimmer and dashed so it doesn't compete visually with the active box. */
+.canvas-size-box-inactive {
+  z-index: 2;
+  border-style: dashed;
+  opacity: 0.55;
+}
+
 .canvas-size-label {
   position: absolute;
   padding: 2px 6px;
