@@ -9,7 +9,6 @@ const LOADING_SCREEN_MAX_DURATION_MS = 2000;
 const READY_FADE_DURATION_MS = 320;
 const SOUND_FEATURE_ENABLED = false;
 const EXPORT_FEATURE_ENABLED = false;
-const EXPORT_PADDING_PX = 8;
 
 const CHECKER_BG =
   'repeating-conic-gradient(#9aa3ad 0% 25%, #cdd4db 0% 50%) 50% / 24px 24px';
@@ -265,6 +264,13 @@ function createPreviewInstance(fileId) {
     sequenceCleanup: null,
     exportCanvasMode: 'auto',
     exportCanvasSize: { width: 0, height: 0 },
+    // Per-animation-name cache: each animation gets one fixed reference box
+    // (captured at its first frame) and one pixel anchor offset, so the
+    // canvas never chases the animated pose and switching back to an
+    // animation always shows the same canvas without re-locking it.
+    canvasBoundsByAnim: {},
+    canvasAnchorByAnim: {},
+    appliedCanvasAnchor: { x: 0, y: 0 },
   };
 }
 
@@ -468,6 +474,10 @@ async function renderSpinePoseToCanvas(file, options = {}) {
   const stage = new SpineStage(root, {
     backgroundColor: 0x000000,
     backgroundAlpha: 0,
+    // Force 1:1 pixels — PIXI's extract multiplies by renderer.resolution,
+    // so leaving this at devicePixelRatio would make the exported PNG bigger
+    // than the width/height we just computed on any HiDPI display.
+    resolution: 1,
   });
 
   try {
@@ -494,19 +504,32 @@ async function renderSpinePoseToCanvas(file, options = {}) {
     spine.update(0);
     await waitForNextFrame();
 
-    const bounds = spine.getLocalBounds();
+    // A lockedBounds override anchors every frame in a queue to the same
+    // reference box (see ensureCanvasAnchorBounds) instead of each frame
+    // cropping to its own current pose — so exported frames stay aligned.
+    // anchorOffset shifts the character inside that fixed canvas, matching
+    // the preview overlay's anchorX/anchorY nudge. The canvas grows by twice
+    // the offset (same as naturalExportSize) so the nudge can't push the
+    // character past the edge and get clipped.
+    const bounds = options.lockedBounds ?? spine.getLocalBounds();
+    const anchorOffset = options.anchorOffset ?? { x: 0, y: 0 };
     const minX = bounds.x;
     const minY = bounds.y;
-    const width = Math.max(2, Math.ceil(bounds.width + EXPORT_PADDING_PX * 2));
-    const height = Math.max(2, Math.ceil(bounds.height + EXPORT_PADDING_PX * 2));
+    const marginX = Math.abs(anchorOffset.x);
+    const marginY = Math.abs(anchorOffset.y);
+    const width = Math.max(2, Math.round(bounds.width + marginX * 2));
+    const height = Math.max(2, Math.round(bounds.height + marginY * 2));
     stage.app.renderer.resize(width, height);
     spine.position.set(
-      EXPORT_PADDING_PX - minX,
-      EXPORT_PADDING_PX - minY,
+      marginX - minX + anchorOffset.x,
+      marginY - minY + anchorOffset.y,
     );
     stage.renderOnce();
 
-    const canvas = stage.app.renderer.extract.canvas(stage.app.stage);
+    // extract.canvas(stage) with no frame auto-crops to content bounds,
+    // discarding the padding/anchor margin we just sized the renderer to —
+    // extractCanvasRegion forces it to capture the full computed rect.
+    const canvas = stage.extractCanvasRegion(0, 0, width, height);
     return { canvas, bounds, logicalWidth: width, logicalHeight: height };
   } finally {
     stage.destroy();
@@ -526,8 +549,8 @@ async function exportFileToSpinePackageData(file, anchor, options = {}) {
     pngDataUrl: canvas.toDataURL('image/png'),
     width: actualWidth,
     height: actualHeight,
-    pivotX: (EXPORT_PADDING_PX + (bounds.width * anchor.x)) * scaleX,
-    pivotY: (EXPORT_PADDING_PX + (bounds.height * anchor.y)) * scaleY,
+    pivotX: bounds.width * anchor.x * scaleX,
+    pivotY: bounds.height * anchor.y * scaleY,
     spineVersion: file.version,
     relativeBasePath: `${basePath}_${options.suffix || 'pivot'}`,
   };
@@ -686,6 +709,11 @@ function registerFrameExport() {
       customName: spineDisplayName(file),
       canvasWidth: instance.exportCanvasMode === 'custom' ? (instance.exportCanvasSize?.width ?? 0) : 0,
       canvasHeight: instance.exportCanvasMode === 'custom' ? (instance.exportCanvasSize?.height ?? 0) : 0,
+      // Same fixed reference box + anchor offset as the preview overlay for
+      // this animation, so every frame in this queue crops around one shared
+      // anchor instead of each frame re-centering on its own current pose.
+      lockedBounds: { ...ensureCanvasAnchorBounds(instance) },
+      anchorOffset: { ...getCanvasAnchorOffset(instance) },
     },
   ];
   updateSuccess(`Đã đăng ký frame ${formatSeconds(instance.elapsed)}s (${instance.currentAnimation}).`);
@@ -702,18 +730,21 @@ function setActiveCanvasSizeValue(axis, rawValue) {
   instance.exportCanvasSize = { ...instance.exportCanvasSize, [axis]: normalized };
 }
 
-// The export canvas is always the tight spine bounds plus the fixed export
-// padding — matches renderSpinePoseToCanvas()'s sizing exactly, so this is
-// the "auto" / minimum size on both the numeric fields and the live overlay.
+// The export canvas is the tight spine bounds, grown by twice the anchor
+// offset so nudging the character (see computeCanvasBoxGeometry) can't push
+// it past the canvas edge — matches renderSpinePoseToCanvas()'s sizing
+// exactly, so this is the "auto" / minimum size on both the numeric fields
+// and the live overlay.
 function naturalExportSize(instance) {
   if (!instance?.spine) {
     return { width: 0, height: 0 };
   }
 
-  const bounds = instance.spine.getLocalBounds();
+  const bounds = ensureCanvasAnchorBounds(instance);
+  const anchor = getCanvasAnchorOffset(instance);
   return {
-    width: Math.max(2, Math.ceil(bounds.width + EXPORT_PADDING_PX * 2)),
-    height: Math.max(2, Math.ceil(bounds.height + EXPORT_PADDING_PX * 2)),
+    width: Math.max(2, Math.round(bounds.width + Math.abs(anchor.x) * 2)),
+    height: Math.max(2, Math.round(bounds.height + Math.abs(anchor.y) * 2)),
   };
 }
 
@@ -739,15 +770,65 @@ function setCanvasMode(mode) {
   render();
 }
 
+// Every animation gets one fixed reference box, captured from its first seen
+// pose, cached on the instance keyed by animation name. This is what keeps
+// the canvas from chasing the animated pose (default behavior now, no manual
+// lock) and makes switching back to an animation reuse the same box.
+function ensureCanvasAnchorBounds(instance) {
+  const key = instance.currentAnimation || '';
+  instance.canvasBoundsByAnim ??= {};
+  if (!instance.canvasBoundsByAnim[key]) {
+    const bounds = instance.spine.getLocalBounds();
+    instance.canvasBoundsByAnim[key] = {
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+    };
+  }
+  return instance.canvasBoundsByAnim[key];
+}
+
+// Per-animation pixel offset that nudges the canvas frame away from center
+// (positive X/Y slides the frame right/down relative to the character).
+function getCanvasAnchorOffset(instance) {
+  const key = instance.currentAnimation || '';
+  return instance.canvasAnchorByAnim?.[key] ?? { x: 0, y: 0 };
+}
+
+function setCanvasAnchorValue(axis, rawValue) {
+  const instance = getActivePreviewInstance();
+  if (!instance) {
+    return;
+  }
+
+  const key = instance.currentAnimation || '';
+  const value = Number(rawValue);
+  const normalized = Number.isFinite(value) ? Math.round(value) : 0;
+  instance.canvasAnchorByAnim ??= {};
+  instance.canvasAnchorByAnim[key] = { ...getCanvasAnchorOffset(instance), [axis]: normalized };
+
+  // A custom size frozen before this anchor change can be smaller than what's
+  // now needed to keep the character from clipping — grow to fit. Never
+  // shrinks a custom box the user intentionally made larger or smaller.
+  if (instance.exportCanvasMode === 'custom') {
+    const natural = naturalExportSize(instance);
+    instance.exportCanvasSize = {
+      width: Math.max(instance.exportCanvasSize.width, natural.width),
+      height: Math.max(instance.exportCanvasSize.height, natural.height),
+    };
+  }
+}
+
 // Screen-space box geometry for the live overlay: box stays centered on the
-// spine's on-screen bounds, sized in real export pixels but drawn at the
-// instance's current zoom so it lines up with what's on screen.
+// animation's fixed reference bounds (not the current animated pose, and not
+// the anchor either — anchor moves the character, see below), sized in real
+// export pixels drawn at the instance's current zoom.
 function computeCanvasBoxGeometry(instance) {
   if (!instance?.spine) {
     return null;
   }
 
-  const bounds = instance.spine.getBounds();
   const zoom = instance.zoom || 1;
   const natural = naturalExportSize(instance);
   const size = instance.exportCanvasSize ?? { width: 0, height: 0 };
@@ -757,8 +838,27 @@ function computeCanvasBoxGeometry(instance) {
   const realHeight = size.height > 0 ? size.height : natural.height;
   const screenWidth = realWidth * zoom;
   const screenHeight = realHeight * zoom;
-  const centerX = bounds.x + bounds.width / 2;
-  const centerY = bounds.y + bounds.height / 2;
+
+  const spine = instance.spine;
+  const scaleX = spine.scale.x || 1;
+  const scaleY = spine.scale.y || 1;
+  const local = ensureCanvasAnchorBounds(instance);
+  const anchor = getCanvasAnchorOffset(instance);
+
+  // Anchor moves the artwork, not the box: nudge the real on-stage character
+  // by the anchor delta (self-correcting here on every read, so it also
+  // catches switching to a different animation's stored anchor — not just a
+  // manual edit), then subtract that same nudge back out of the box's
+  // center so the canvas frame stays put while the character shifts inside it.
+  const prevAnchor = instance.appliedCanvasAnchor ?? { x: 0, y: 0 };
+  if (anchor.x !== prevAnchor.x || anchor.y !== prevAnchor.y) {
+    spine.position.x += (anchor.x - prevAnchor.x) * scaleX;
+    spine.position.y += (anchor.y - prevAnchor.y) * scaleY;
+    instance.appliedCanvasAnchor = anchor;
+  }
+
+  const centerX = spine.position.x - anchor.x * scaleX + (local.x + local.width / 2) * scaleX;
+  const centerY = spine.position.y - anchor.y * scaleY + (local.y + local.height / 2) * scaleY;
 
   return {
     left: centerX - screenWidth / 2,
@@ -778,28 +878,31 @@ function canvasSizeHeightLabelText(geometry) {
   return `H ${Math.round(geometry.realHeight)}px`;
 }
 
-function syncCanvasSizeOverlay(instance) {
-  const box = document.querySelector('[data-canvas-size-box]');
-  if (!box || !instance?.spine) {
-    return;
-  }
+function syncCanvasSizeOverlay(instances) {
+  const list = Array.isArray(instances) ? instances : [instances];
+  for (const instance of list) {
+    if (!instance?.spine) {
+      continue;
+    }
 
-  const geometry = computeCanvasBoxGeometry(instance);
-  if (!geometry) {
-    return;
-  }
+    const box = document.querySelector(`[data-canvas-size-box="${instance.id}"]`);
+    const geometry = computeCanvasBoxGeometry(instance);
+    if (!box || !geometry) {
+      continue;
+    }
 
-  box.style.left = `${geometry.left}px`;
-  box.style.top = `${geometry.top}px`;
-  box.style.width = `${Math.max(1, geometry.width)}px`;
-  box.style.height = `${Math.max(1, geometry.height)}px`;
-  const widthLabel = box.querySelector('[data-canvas-size-label-width]');
-  if (widthLabel) {
-    widthLabel.textContent = canvasSizeWidthLabelText(geometry);
-  }
-  const heightLabel = box.querySelector('[data-canvas-size-label-height]');
-  if (heightLabel) {
-    heightLabel.textContent = canvasSizeHeightLabelText(geometry);
+    box.style.left = `${geometry.left}px`;
+    box.style.top = `${geometry.top}px`;
+    box.style.width = `${Math.max(1, geometry.width)}px`;
+    box.style.height = `${Math.max(1, geometry.height)}px`;
+    const widthLabel = box.querySelector('[data-canvas-size-label-width]');
+    if (widthLabel) {
+      widthLabel.textContent = canvasSizeWidthLabelText(geometry);
+    }
+    const heightLabel = box.querySelector('[data-canvas-size-label-height]');
+    if (heightLabel) {
+      heightLabel.textContent = canvasSizeHeightLabelText(geometry);
+    }
   }
 }
 
@@ -863,11 +966,24 @@ async function handleExportFrameQueue() {
         continue;
       }
 
+      // Canvas size/bounds/anchor belong to the animation, not the moment it
+      // was registered — if the spine is still loaded, use its current live
+      // values (in case the anchor got tweaked after registering) instead of
+      // the frozen snapshot. Falls back to the snapshot if it was removed.
+      const instance = state.preview.instances.find((inst) => inst.fileId === item.fileId);
+      const canvasSize = instance
+        ? (instance.exportCanvasMode === 'custom' ? instance.exportCanvasSize : { width: 0, height: 0 })
+        : { width: item.canvasWidth ?? 0, height: item.canvasHeight ?? 0 };
+      const lockedBounds = instance?.canvasBoundsByAnim?.[item.animationName] ?? item.lockedBounds;
+      const anchorOffset = instance?.canvasAnchorByAnim?.[item.animationName] ?? item.anchorOffset ?? { x: 0, y: 0 };
+
       const pngDataUrl = await captureSpriteFramePng(file, {
         skinName: item.skinName,
         animationName: item.animationName,
         elapsedTime: item.elapsed,
-        canvasSize: { width: item.canvasWidth ?? 0, height: item.canvasHeight ?? 0 },
+        canvasSize,
+        lockedBounds,
+        anchorOffset,
       });
       payloadFiles.push({ fileName: `${uniqueNames[index]}.png`, pngDataUrl });
     }
@@ -1379,6 +1495,8 @@ function clearAllPreviewInstances() {
 
 function handleTicker() {
   const activeInstance = getActivePreviewInstance();
+  syncCanvasSizeOverlay(canvasOverlayInstances(activeInstance));
+
   if (!activeInstance?.spine) {
     return;
   }
@@ -1418,8 +1536,6 @@ function handleTicker() {
   if (fill) {
     fill.setAttribute('style', `width:${ratio * 100}%`);
   }
-
-  syncCanvasSizeOverlay(activeInstance);
 }
 
 function destroyPreview() {
@@ -2070,6 +2186,10 @@ function bindEvents() {
       setActiveCanvasSizeValue('width', target.value);
     } else if (target.matches('[data-canvas-height-input]')) {
       setActiveCanvasSizeValue('height', target.value);
+    } else if (target.matches('[data-canvas-anchor-x-input]')) {
+      setCanvasAnchorValue('x', target.value);
+    } else if (target.matches('[data-canvas-anchor-y-input]')) {
+      setCanvasAnchorValue('y', target.value);
     } else if (target.matches('[data-frame-name-input]')) {
       const frameId = target.closest('[data-frame-export-id]')?.dataset.frameExportId ?? '';
       if (frameId) {
@@ -2112,7 +2232,7 @@ function bindEvents() {
       handleSkinChange(target.value);
     } else if (SOUND_FEATURE_ENABLED && target.matches('[data-sound-select]')) {
       setSelectedSound(target.value);
-    } else if (target.matches('[data-canvas-width-input], [data-canvas-height-input]')) {
+    } else if (target.matches('[data-canvas-width-input], [data-canvas-height-input], [data-canvas-anchor-x-input], [data-canvas-anchor-y-input]')) {
       render();
     }
   });
@@ -2199,7 +2319,10 @@ function backgroundPickerMarkup() {
   `;
 }
 
-function canvasSizeOverlayMarkup(instance) {
+// isActive controls the drag handle only — background boxes (kept visible
+// because that spine already has a registered frame) are just a passive
+// reminder of where their canvas sits, not interactively resizable.
+function canvasSizeOverlayMarkup(instance, isActive) {
   const geometry = computeCanvasBoxGeometry(instance);
   if (!geometry) {
     return '';
@@ -2209,15 +2332,27 @@ function canvasSizeOverlayMarkup(instance) {
 
   return `
     <div
-      class="canvas-size-box"
-      data-canvas-size-box
+      class="canvas-size-box ${isActive ? '' : 'canvas-size-box-inactive'}"
+      data-canvas-size-box="${escapeHtml(instance.id)}"
       style="left:${geometry.left}px;top:${geometry.top}px;width:${Math.max(1, geometry.width)}px;height:${Math.max(1, geometry.height)}px;"
     >
       <span class="canvas-size-label canvas-size-label-width" data-canvas-size-label-width>${canvasSizeWidthLabelText(geometry)}</span>
       <span class="canvas-size-label canvas-size-label-height" data-canvas-size-label-height>${canvasSizeHeightLabelText(geometry)}</span>
-      ${isCustom ? '<div class="canvas-size-handle" data-canvas-size-handle title="Kéo để chỉnh kích thước canvas"></div>' : ''}
+      ${isActive && isCustom ? '<div class="canvas-size-handle" data-canvas-size-handle title="Kéo để chỉnh kích thước canvas"></div>' : ''}
     </div>
   `;
+}
+
+// A spine keeps showing its canvas box once it has a registered frame in the
+// export queue, even after focus moves to a different spine on the stage.
+function hasRegisteredFrame(instance) {
+  return state.export.frameQueue.some((item) => item.fileId === instance.fileId);
+}
+
+function canvasOverlayInstances(activeInstance) {
+  return state.preview.instances.filter((instance) => (
+    instance.spine && (instance.id === activeInstance?.id || hasRegisteredFrame(instance))
+  ));
 }
 
 function frameExportPanelMarkup() {
@@ -2227,6 +2362,7 @@ function frameExportPanelMarkup() {
   const activeCanvasSize = activeInstance?.exportCanvasSize ?? { width: 0, height: 0 };
   const activeCanvasMode = activeInstance?.exportCanvasMode ?? 'auto';
   const isCustomMode = activeCanvasMode === 'custom';
+  const activeCanvasAnchor = activeInstance ? getCanvasAnchorOffset(activeInstance) : { x: 0, y: 0 };
   const items = queue
     .map(
       (item) => `
@@ -2301,6 +2437,32 @@ function frameExportPanelMarkup() {
             placeholder="auto"
             value="${activeCanvasSize.height || ''}"
             ${isCustomMode ? '' : 'disabled'}
+          />
+        </label>
+      </div>
+      <div class="anchor-fields">
+        <label class="field anchor-field">
+          <span>Anchor X (px)</span>
+          <input
+            type="number"
+            step="1"
+            data-canvas-anchor-x-input
+            placeholder="0"
+            value="${activeCanvasAnchor.x || ''}"
+            ${activeInstance ? '' : 'disabled'}
+            title="Dịch canvas theo tâm hiện tại của animation này"
+          />
+        </label>
+        <label class="field anchor-field">
+          <span>Anchor Y (px)</span>
+          <input
+            type="number"
+            step="1"
+            data-canvas-anchor-y-input
+            placeholder="0"
+            value="${activeCanvasAnchor.y || ''}"
+            ${activeInstance ? '' : 'disabled'}
+            title="Dịch canvas theo tâm hiện tại của animation này"
           />
         </label>
       </div>
@@ -2644,7 +2806,7 @@ function previewPanelMarkup() {
           <div data-preview-viewport class="preview-viewport"></div>
           ${state.preview.isLoading ? '<div class="overlay-message">Loading spine...</div>' : ''}
           ${!hasFiles && !state.preview.isLoading ? '<div class="overlay-message">Chọn folder và scan để bắt đầu preview.</div>' : ''}
-          ${hasFiles && activeInstance ? canvasSizeOverlayMarkup(activeInstance) : ''}
+          ${hasFiles ? canvasOverlayInstances(activeInstance).map((instance) => canvasSizeOverlayMarkup(instance, instance.id === activeInstance?.id)).join('') : ''}
           ${animationOverlay}
         </div>
         <div class="preview-stack-section">
