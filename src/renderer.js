@@ -724,10 +724,16 @@ function setCanvasMode(mode) {
   }
 
   const nextMode = mode === 'custom' ? 'custom' : 'auto';
-  const hasNoSize = !instance.exportCanvasSize.width && !instance.exportCanvasSize.height;
-  if (nextMode === 'custom' && hasNoSize) {
-    // Start the box matching the character exactly, instead of collapsed to 0.
-    instance.exportCanvasSize = naturalExportSize(instance);
+  if (nextMode === 'custom') {
+    const hasNoSize = !instance.exportCanvasSize.width && !instance.exportCanvasSize.height;
+    if (hasNoSize) {
+      // Start the box matching the character exactly, instead of collapsed to 0.
+      instance.exportCanvasSize = naturalExportSize(instance);
+    }
+  } else {
+    // Auto always tracks natural bounds — drop any leftover custom size so
+    // the overlay/export don't keep aligning to the old custom box.
+    instance.exportCanvasSize = { width: 0, height: 0 };
   }
   instance.exportCanvasMode = nextMode;
   render();
