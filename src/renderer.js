@@ -3792,9 +3792,14 @@ function landingPageMarkup() {
         class="mode-landing-card mode-landing-card-preview"
         data-action="open-preview-workspace"
       >
+        <span class="mode-landing-index" aria-hidden="true">01</span>
         <span class="mode-landing-orbit mode-landing-orbit-a" aria-hidden="true"></span>
         <span class="mode-landing-orbit mode-landing-orbit-b" aria-hidden="true"></span>
         <span class="mode-landing-gridline" aria-hidden="true"></span>
+        <div class="mode-landing-status" aria-hidden="true">
+          <span>Ready</span>
+          <span>Preview Control Room</span>
+        </div>
         <span class="mode-landing-kicker">Workspace 01</span>
         <strong>Preview Anim</strong>
         <p>Preview nhiều spine trong cùng một canvas, kéo thả tự do, canh bố cục và kiểm tra animation nhanh trước khi xử lý sâu hơn.</p>
@@ -3809,9 +3814,14 @@ function landingPageMarkup() {
         class="mode-landing-card mode-landing-card-export"
         data-action="open-export-workspace"
       >
+        <span class="mode-landing-index" aria-hidden="true">02</span>
         <span class="mode-landing-orbit mode-landing-orbit-a" aria-hidden="true"></span>
         <span class="mode-landing-orbit mode-landing-orbit-b" aria-hidden="true"></span>
         <span class="mode-landing-gridline" aria-hidden="true"></span>
+        <div class="mode-landing-status" aria-hidden="true">
+          <span>Ready</span>
+          <span>Export Control Room</span>
+        </div>
         <span class="mode-landing-kicker">Workspace 02</span>
         <strong>Export PNG</strong>
         <p>So sánh anchor giữa nhiều spine, register frame cần thiết và review PNG chồng lớp để phát hiện sprite còn lệch hay đã khớp.</p>
