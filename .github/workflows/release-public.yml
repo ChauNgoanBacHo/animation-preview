@@ -101,7 +101,6 @@ jobs:
         with:
           name: animation-preview-windows-release
           path: |
-            out/make/**/*.exe
             out/make/portable/*.zip
           if-no-files-found: error
           retention-days: 7
@@ -112,7 +111,6 @@ jobs:
           tag_name: ${{ steps.release_tag.outputs.release_tag }}
           generate_release_notes: true
           files: |
-            out/make/**/*.exe
             out/make/portable/*.zip
           fail_on_unmatched_files: true
 
@@ -126,14 +124,8 @@ jobs:
             echo "## Public Release Download"
             echo
             echo "- Release page: ${RELEASE_URL}"
+            echo "- Recommended asset: portable zip"
           } >> "$GITHUB_STEP_SUMMARY"
-
-          find out/make -name '*.exe' | while read -r asset_path; do
-            asset_name="$(basename "$asset_path")"
-            download_url="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${asset_name}"
-            echo "- ${asset_name}: ${download_url}" >> "$GITHUB_STEP_SUMMARY"
-            echo "Release asset URL: ${download_url}"
-          done
 
           find out/make/portable -name '*.zip' | while read -r asset_path; do
             asset_name="$(basename "$asset_path")"
