@@ -84,3 +84,22 @@ jobs:
           files: |
             out/make/**/*.exe
           fail_on_unmatched_files: true
+
+      - name: Publish download links
+        shell: bash
+        run: |
+          RELEASE_TAG="${{ steps.release_tag.outputs.release_tag }}"
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${RELEASE_TAG}"
+
+          {
+            echo "## Public Release Download"
+            echo
+            echo "- Release page: ${RELEASE_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          find out/make -name '*.exe' | while read -r asset_path; do
+            asset_name="$(basename "$asset_path")"
+            download_url="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${asset_name}"
+            echo "- ${asset_name}: ${download_url}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Release asset URL: ${download_url}"
+          done
