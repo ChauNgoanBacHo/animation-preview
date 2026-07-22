@@ -68,11 +68,41 @@ jobs:
 
       - run: npm run make:win
 
+      - name: Create portable zip
+        id: portable_zip
+        shell: pwsh
+        run: |
+          $releaseTag = "${{ steps.release_tag.outputs.release_tag }}"
+          $portableDir = Join-Path $PWD "out/make/portable"
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+
+          $packagedAppDir = Get-ChildItem -Path (Join-Path $PWD "out") -Directory |
+            Where-Object { $_.Name -like "*win32*" } |
+            Sort-Object Name |
+            Select-Object -First 1
+
+          if (-not $packagedAppDir) {
+            throw "Could not find packaged Windows app directory under ./out"
+          }
+
+          $zipName = "AnimationPreview-portable-$releaseTag.zip"
+          $zipPath = Join-Path $portableDir $zipName
+
+          if (Test-Path $zipPath) {
+            Remove-Item -Force $zipPath
+          }
+
+          Compress-Archive -Path (Join-Path $packagedAppDir.FullName '*') -DestinationPath $zipPath
+
+          "zip_name=$zipName" >> $env:GITHUB_OUTPUT
+          "zip_path=$zipPath" >> $env:GITHUB_OUTPUT
+
       - uses: actions/upload-artifact@v4
         with:
           name: animation-preview-windows-release
           path: |
             out/make/**/*.exe
+            out/make/portable/*.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -83,6 +113,7 @@ jobs:
           generate_release_notes: true
           files: |
             out/make/**/*.exe
+            out/make/portable/*.zip
           fail_on_unmatched_files: true
 
       - name: Publish download links
@@ -102,4 +133,11 @@ jobs:
             download_url="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${asset_name}"
             echo "- ${asset_name}: ${download_url}" >> "$GITHUB_STEP_SUMMARY"
             echo "Release asset URL: ${download_url}"
+          done
+
+          find out/make/portable -name '*.zip' | while read -r asset_path; do
+            asset_name="$(basename "$asset_path")"
+            download_url="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${asset_name}"
+            echo "- ${asset_name}: ${download_url}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Portable asset URL: ${download_url}"
           done
