@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld('spinePreview', {
   scanSoundFolder: (folderPath) => ipcRenderer.invoke('scan-sound-folder', folderPath),
   selectExportFolder: () => ipcRenderer.invoke('select-export-folder'),
   saveBatchSpineExport: (payload) => ipcRenderer.invoke('save-batch-spine-export', payload),
+  saveBatchSpriteFrames: (payload) => ipcRenderer.invoke('save-batch-sprite-frames', payload),
+  openFolder: (folderPath) => ipcRenderer.invoke('open-folder', folderPath),
 });

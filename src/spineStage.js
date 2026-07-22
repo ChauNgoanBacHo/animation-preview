@@ -35,7 +35,7 @@ export class SpineStage {
       backgroundColor: options.backgroundColor ?? 0x101418,
       backgroundAlpha: options.backgroundAlpha ?? 1,
       autoDensity: true,
-      resolution: window.devicePixelRatio || 1,
+      resolution: options.resolution ?? (window.devicePixelRatio || 1),
     });
 
     const view = this.app.view;
@@ -238,6 +238,14 @@ export class SpineStage {
     if (!this.destroyed) {
       this.app.renderer.render(this.app.stage);
     }
+  }
+
+  // extract.canvas(displayObject) with no frame auto-crops to the display
+  // object's own content bounds (generateTexture computes its own region),
+  // silently discarding any padding/anchor margin baked into renderer.resize
+  // — passing an explicit frame forces it to capture exactly that rect.
+  extractCanvasRegion(x, y, width, height) {
+    return this.app.renderer.extract.canvas(this.app.stage, new PIXI.Rectangle(x, y, width, height));
   }
 
   destroy() {

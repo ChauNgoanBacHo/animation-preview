@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, screen } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
@@ -364,6 +364,46 @@ async function saveBatchSpineExportFiles(outputDir, files) {
   return writtenFiles;
 }
 
+// Overwrites silently if the file already exists (default writeFile mode,
+// no exclusive flag) — retries a couple times first, since re-exporting a
+// name that's still open in another program (Cocos, an image viewer, AV
+// scanning a fresh write) trips a transient EBUSY/EPERM on Windows.
+async function writeFileReplacing(filePath, buffer) {
+  const attempts = 3;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await fs.promises.writeFile(filePath, buffer);
+      return;
+    } catch (error) {
+      const isLocked = error.code === 'EBUSY' || error.code === 'EPERM' || error.code === 'EACCES';
+      if (!isLocked || attempt === attempts) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
+    }
+  }
+}
+
+async function saveBatchSpriteFramePngs(outputDir, files) {
+  const writtenFiles = [];
+
+  for (const file of files) {
+    if (!file?.fileName || !file?.pngDataUrl) {
+      continue;
+    }
+
+    // Strip any directory components so every PNG lands flat in outputDir,
+    // regardless of what the (user-editable) custom name contains.
+    const safeName = path.basename(file.fileName);
+    const pngPath = path.join(outputDir, safeName);
+    const base64 = String(file.pngDataUrl).replace(/^data:image\/png;base64,/, '');
+    await writeFileReplacing(pngPath, Buffer.from(base64, 'base64'));
+    writtenFiles.push(pngPath);
+  }
+
+  return writtenFiles;
+}
+
 function registerIpcHandlers() {
   ipcMain.handle('select-folder', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
@@ -475,6 +515,42 @@ function registerIpcHandlers() {
 
   ipcMain.handle('save-batch-spine-export', handleSaveBatchSpineExport);
   ipcMain.handle('save-batch-png', handleSaveBatchSpineExport);
+
+  ipcMain.handle('save-batch-sprite-frames', async (_event, payload) => {
+    try {
+      const outputDir = payload?.outputDir;
+      const files = Array.isArray(payload?.files) ? payload.files : [];
+      if (!outputDir || !fs.existsSync(outputDir)) {
+        return {
+          ok: false,
+          writtenFiles: [],
+          error: 'Folder export không tồn tại hoặc không thể truy cập.',
+        };
+      }
+
+      const writtenFiles = await saveBatchSpriteFramePngs(outputDir, files);
+      return {
+        ok: true,
+        writtenFiles,
+        error: '',
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        writtenFiles: [],
+        error: error instanceof Error ? error.message : 'Không thể lưu sprite frame PNG.',
+      };
+    }
+  });
+
+  ipcMain.handle('open-folder', async (_event, folderPath) => {
+    if (!folderPath || !fs.existsSync(folderPath)) {
+      return { ok: false, error: 'Folder không tồn tại.' };
+    }
+
+    const error = await shell.openPath(folderPath);
+    return { ok: !error, error };
+  });
 }
 
 function installSpineAssetProtocol() {
