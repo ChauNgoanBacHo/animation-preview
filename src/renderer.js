@@ -3980,9 +3980,13 @@ function landingPageMarkup() {
         data-action="open-preview-workspace"
       >
         <span class="mode-landing-index" aria-hidden="true">01</span>
-        <span class="mode-landing-orbit mode-landing-orbit-a" aria-hidden="true"></span>
-        <span class="mode-landing-orbit mode-landing-orbit-b" aria-hidden="true"></span>
-        <span class="mode-landing-gridline" aria-hidden="true"></span>
+        <div class="mode-landing-feature-icon mode-landing-feature-icon-preview" aria-hidden="true">
+          <span class="mode-landing-feature-frame mode-landing-feature-frame-back"></span>
+          <span class="mode-landing-feature-frame mode-landing-feature-frame-front"></span>
+          <span class="mode-landing-feature-node mode-landing-feature-node-a"></span>
+          <span class="mode-landing-feature-node mode-landing-feature-node-b"></span>
+          <span class="mode-landing-feature-node mode-landing-feature-node-c"></span>
+        </div>
         <div class="mode-landing-status" aria-hidden="true">
           <span>Ready</span>
           <span>Preview Control Room</span>
@@ -4002,9 +4006,14 @@ function landingPageMarkup() {
         data-action="open-export-workspace"
       >
         <span class="mode-landing-index" aria-hidden="true">02</span>
-        <span class="mode-landing-orbit mode-landing-orbit-a" aria-hidden="true"></span>
-        <span class="mode-landing-orbit mode-landing-orbit-b" aria-hidden="true"></span>
-        <span class="mode-landing-gridline" aria-hidden="true"></span>
+        <div class="mode-landing-feature-icon mode-landing-feature-icon-export" aria-hidden="true">
+          <span class="mode-landing-feature-sheet"></span>
+          <span class="mode-landing-feature-sheet mode-landing-feature-sheet-mid"></span>
+          <span class="mode-landing-feature-sheet mode-landing-feature-sheet-top"></span>
+          <span class="mode-landing-feature-crosshair-h"></span>
+          <span class="mode-landing-feature-crosshair-v"></span>
+          <span class="mode-landing-feature-anchor"></span>
+        </div>
         <div class="mode-landing-status" aria-hidden="true">
           <span>Ready</span>
           <span>Export Control Room</span>
