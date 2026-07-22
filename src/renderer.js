@@ -38,6 +38,7 @@ let previewResizeObserver = null;
 let exportResizeFrameId = 0;
 let exportResizeObserver = null;
 let previewInstanceIdSeed = 0;
+let uiTransitionTimeoutId = 0;
 
 const state = {
   folderPath: '',
@@ -49,6 +50,7 @@ const state = {
   theme: 'dark',
   background: 'scene',
   uiMode: 'landing',
+  uiTransition: false,
   loading: true,
   readyAnimating: false,
   scanning: false,
@@ -94,6 +96,7 @@ const state = {
     anchorX: '0.5',
     anchorY: '0.5',
     selectedFileIds: [],
+    activeReviewFrameId: '',
     isExporting: false,
     lastSummary: '',
     lastOutputDir: '',
@@ -223,13 +226,14 @@ function updateSuccess(message = '') {
 }
 
 function setUiMode(mode) {
+  const previousMode = state.uiMode;
+  let nextMode = 'landing';
   if (mode === 'export') {
-    state.uiMode = 'export';
+    nextMode = 'export';
   } else if (mode === 'preview') {
-    state.uiMode = 'preview';
-  } else {
-    state.uiMode = 'landing';
+    nextMode = 'preview';
   }
+  state.uiMode = nextMode;
   if (state.uiMode === 'export') {
     state.preview.animationListOpen = false;
     closePreviewContextMenu();
@@ -239,6 +243,15 @@ function setUiMode(mode) {
       applyInstanceTimeScale(instance);
     });
     syncPreviewStateFromInstance(getActivePreviewInstance());
+  }
+  const shouldAnimateTransition = previousMode !== nextMode;
+  if (shouldAnimateTransition) {
+    state.uiTransition = true;
+    window.clearTimeout(uiTransitionTimeoutId);
+    uiTransitionTimeoutId = window.setTimeout(() => {
+      state.uiTransition = false;
+      render();
+    }, 820);
   }
   render();
 }
@@ -299,6 +312,7 @@ function createPreviewInstance(fileId) {
     canvasBoundsByAnim: {},
     canvasAnchorByAnim: {},
     appliedCanvasAnchor: { x: 0, y: 0 },
+    exportLaneIndex: 0,
   };
 }
 
@@ -377,8 +391,79 @@ function nearestExportLanePoint(point) {
   ), lanes[0]);
 }
 
+function nearestExportLaneIndex(point) {
+  const lanes = getExportLaneCenters();
+  if (!lanes.length) {
+    return 0;
+  }
+
+  const target = point ?? lanes[0];
+  let bestIndex = 0;
+  for (let index = 1; index < lanes.length; index += 1) {
+    if (Math.abs(lanes[index].x - target.x) < Math.abs(lanes[bestIndex].x - target.x)) {
+      bestIndex = index;
+    }
+  }
+  return bestIndex;
+}
+
+function exportLanePointByIndex(index) {
+  const lanes = getExportLaneCenters();
+  if (!lanes.length) {
+    return null;
+  }
+  const normalized = Math.max(0, Math.min(Number.isFinite(index) ? index : 0, lanes.length - 1));
+  return lanes[normalized];
+}
+
 function getExportModalInstance() {
   return state.export.modal.instance;
+}
+
+function getRegisteredReviewFrames() {
+  return state.export.frameQueue.filter((item) => item.previewPngDataUrl);
+}
+
+function getActiveReviewFrame() {
+  return getRegisteredReviewFrames().find((item) => item.id === state.export.activeReviewFrameId) ?? null;
+}
+
+function ensureActiveReviewFrame() {
+  const frames = getRegisteredReviewFrames();
+  if (!frames.length) {
+    state.export.activeReviewFrameId = '';
+    return null;
+  }
+
+  const active = frames.find((item) => item.id === state.export.activeReviewFrameId);
+  if (active) {
+    return active;
+  }
+
+  const fallback = frames[frames.length - 1];
+  state.export.activeReviewFrameId = fallback.id;
+  return fallback;
+}
+
+function setActiveReviewFrame(frameId) {
+  const frame = getRegisteredReviewFrames().find((item) => item.id === frameId);
+  if (!frame) {
+    return;
+  }
+  state.export.activeReviewFrameId = frame.id;
+  render();
+}
+
+function stepActiveReviewFrame(direction) {
+  const frames = getRegisteredReviewFrames();
+  if (!frames.length) {
+    return;
+  }
+
+  const currentIndex = Math.max(0, frames.findIndex((item) => item.id === state.export.activeReviewFrameId));
+  const nextIndex = (currentIndex + direction + frames.length) % frames.length;
+  state.export.activeReviewFrameId = frames[nextIndex].id;
+  render();
 }
 
 function getExportModalFile() {
@@ -697,6 +782,17 @@ async function captureSpriteFramePng(file, options = {}) {
   return fitted.toDataURL('image/png');
 }
 
+async function captureSpriteFramePreview(file, options = {}) {
+  const { canvas } = await renderSpinePoseToCanvas(file, options);
+  const size = options.canvasSize ?? { width: 0, height: 0 };
+  const fitted = fitCanvasToSize(canvas, size.width, size.height);
+  return {
+    pngDataUrl: fitted.toDataURL('image/png'),
+    width: fitted.width || canvas.width || 1,
+    height: fitted.height || canvas.height || 1,
+  };
+}
+
 function dedupeFileNames(names) {
   const counts = new Map();
   return names.map((name) => {
@@ -806,9 +902,9 @@ async function registerFrameExport() {
   }
 
   syncDefaultExportOutputDir();
-  let previewPngDataUrl = '';
+  let previewFrame = null;
   try {
-    previewPngDataUrl = await captureSpriteFramePng(file, {
+    previewFrame = await captureSpriteFramePreview(file, {
       skinName: instance.currentSkin,
       animationName: instance.currentAnimation,
       elapsedTime: instance.elapsed,
@@ -841,9 +937,12 @@ async function registerFrameExport() {
       // anchor instead of each frame re-centering on its own current pose.
       lockedBounds: { ...ensureCanvasAnchorBounds(instance) },
       anchorOffset: { ...getCanvasAnchorOffset(instance) },
-      previewPngDataUrl,
+      previewPngDataUrl: previewFrame.pngDataUrl,
+      previewWidth: previewFrame.width,
+      previewHeight: previewFrame.height,
     },
   ];
+  state.export.activeReviewFrameId = state.export.frameQueue[state.export.frameQueue.length - 1]?.id ?? '';
   updateSuccess(`Đã đăng ký frame ${formatSeconds(instance.elapsed)}s (${instance.currentAnimation}).`);
 }
 
@@ -1033,6 +1132,7 @@ function syncCanvasSizeOverlay(instances) {
 
 function removeFrameExport(frameId) {
   state.export.frameQueue = state.export.frameQueue.filter((item) => item.id !== frameId);
+  ensureActiveReviewFrame();
   render();
 }
 
@@ -1045,6 +1145,7 @@ function updateFrameExportName(frameId, value) {
 
 function clearFrameQueue() {
   state.export.frameQueue = [];
+  state.export.activeReviewFrameId = '';
   render();
 }
 
@@ -1288,7 +1389,16 @@ function refreshPreviewLayout() {
   }
 
   attachStageView();
-  state.preview.stage.syncViewportSize();
+  const resized = state.preview.stage.syncViewportSize();
+  if (resized && isExportPage()) {
+    state.preview.instances.forEach((instance) => {
+      if (!instance.spine) {
+        return;
+      }
+      const snapped = nearestExportLanePoint(state.preview.stage.getSpineCenter(instance.spine));
+      state.preview.stage.centerSpineAt(instance.spine, snapped.x, snapped.y);
+    });
+  }
   state.preview.stage.renderOnce();
 }
 
@@ -1893,6 +2003,30 @@ function getInitialInstanceCenter(instanceCount, point) {
   };
 }
 
+function settleExportInstancePosition(instance) {
+  if (!instance?.spine || !state.preview.stage || !isExportPage()) {
+    return;
+  }
+
+  let remainingAttempts = 6;
+  const run = () => {
+    if (!instance.spine || !state.preview.stage || !isExportPage()) {
+      return;
+    }
+    state.preview.stage.syncViewportSize();
+    const targetLane = exportLanePointByIndex(instance.exportLaneIndex);
+    const snapped = targetLane ?? nearestExportLanePoint(state.preview.stage.getSpineCenter(instance.spine));
+    state.preview.stage.centerSpineAt(instance.spine, snapped.x, snapped.y);
+    state.preview.stage.renderOnce();
+    remainingAttempts -= 1;
+    if (remainingAttempts > 0) {
+      window.requestAnimationFrame(run);
+    }
+  };
+
+  window.requestAnimationFrame(run);
+}
+
 async function addPreviewInstance(fileId, options = {}) {
   const file = getFileById(fileId);
   const stage = await ensurePreviewStage();
@@ -1910,6 +2044,7 @@ async function addPreviewInstance(fileId, options = {}) {
   if (isExportPage()) {
     instance.loop = false;
     instance.paused = true;
+    instance.exportLaneIndex = Number.isInteger(options.laneIndex) ? options.laneIndex : 0;
   }
   state.preview.instances = [...state.preview.instances, instance];
 
@@ -1942,12 +2077,16 @@ async function addPreviewInstance(fileId, options = {}) {
     await waitForNextFrame();
     stage.syncViewportSize();
     const desiredCenter = getInitialInstanceCenter(state.preview.instances.length - 1, options.point);
-    const center = isExportPage() ? nearestExportLanePoint(desiredCenter) : desiredCenter;
+    const laneCenter = isExportPage() ? exportLanePointByIndex(instance.exportLaneIndex) : null;
+    const center = isExportPage() ? (laneCenter ?? nearestExportLanePoint(desiredCenter)) : desiredCenter;
     stage.centerSpineAt(spine, center.x, center.y);
     instance.zoom = stage.setSpineScale(spine, 1);
     applyInstanceTimeScale(instance);
     setActivePreviewInstance(instance.id);
     stage.renderOnce();
+    if (isExportPage()) {
+      settleExportInstancePosition(instance);
+    }
   } catch (error) {
     state.preview.instances = state.preview.instances.filter((item) => item.id !== instance.id);
     if (requestId === state.previewRequestId) {
@@ -2439,6 +2578,7 @@ function bindPanEvents() {
       const instance = getPreviewInstanceById(drag.instanceId);
       if (instance?.spine) {
         const snapped = nearestExportLanePoint(state.preview.stage.getSpineCenter(instance.spine));
+        instance.exportLaneIndex = nearestExportLaneIndex(snapped);
         state.preview.stage.centerSpineAt(instance.spine, snapped.x, snapped.y);
         state.preview.stage.renderOnce();
       }
@@ -2660,8 +2800,17 @@ function bindEvents() {
       if (frameId) {
         removeFrameExport(frameId);
       }
+    } else if (action === 'select-review-frame') {
+      const frameId = event.target.closest('[data-frame-export-id]')?.dataset.frameExportId ?? '';
+      if (frameId) {
+        setActiveReviewFrame(frameId);
+      }
     } else if (action === 'clear-frame-queue') {
       clearFrameQueue();
+    } else if (action === 'review-frame-prev') {
+      stepActiveReviewFrame(-1);
+    } else if (action === 'review-frame-next') {
+      stepActiveReviewFrame(1);
     } else if (action === 'export-frame-queue') {
       await handleExportFrameQueue();
     } else if (action === 'open-export-folder') {
@@ -2771,7 +2920,13 @@ function bindEvents() {
     state.draggingFileId = '';
     if (fileId) {
       const point = state.preview.stage?.clientToCanvasPoint(event.clientX, event.clientY);
-      await addPreviewInstance(fileId, { point });
+      let laneIndex = 0;
+      if (isExportPage()) {
+        const rect = dropzone.getBoundingClientRect();
+        const relativeX = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0;
+        laneIndex = relativeX >= 0.5 ? 1 : 0;
+      }
+      await addPreviewInstance(fileId, { point, laneIndex });
     }
   });
 
@@ -3038,7 +3193,6 @@ function frameExportPanelMarkup() {
         </div>
         <span>${queue.length} registered</span>
       </div>
-      <p class="export-workspace-copy">Workspace này dành cho team anim so sánh nhiều spine cùng kích cỡ nhưng lệch anchor, dừng ở đúng frame rồi export lại PNG với canvas mới.</p>
       <label class="field">
         <span>Animation</span>
         <select data-animation-select ${activeInstance ? '' : 'disabled'}>${optionsAnimation}</select>
@@ -3650,7 +3804,18 @@ function exportPageMarkup() {
   const activeInstance = getActivePreviewInstance();
   const activeFile = getPreviewFile(activeInstance);
   const hasFiles = Boolean(activeInstance && activeFile);
-  const registeredFrames = state.export.frameQueue.filter((item) => item.previewPngDataUrl);
+  const registeredFrames = getRegisteredReviewFrames();
+  const activeReviewFrame = ensureActiveReviewFrame();
+  const reviewStackFrames = activeReviewFrame
+    ? [
+        ...registeredFrames.filter((item) => item.id !== activeReviewFrame.id),
+        activeReviewFrame,
+      ]
+    : registeredFrames;
+  const reviewReferenceFrame = registeredFrames[0] ?? null;
+  const reviewReferenceWidth = Math.max(1, reviewReferenceFrame?.previewWidth ?? 1);
+  const reviewReferenceHeight = Math.max(1, reviewReferenceFrame?.previewHeight ?? 1);
+  const reviewScale = Math.min(1, 260 / reviewReferenceWidth, 260 / reviewReferenceHeight);
   const laneGuides = getExportLaneCenters()
     .map(
       (lane, index) => `
@@ -3672,7 +3837,6 @@ function exportPageMarkup() {
             <p class="eyebrow">Export PNG</p>
             <h2>Anchor Compare Workspace</h2>
           </div>
-          <p class="export-workspace-copy">Lane 1 và Lane 2 dùng để kéo spine vào so sánh anchor. Khu PNG Review bên phải sẽ chồng các frame đã register để kiểm tra sprite đã khớp nhau chưa.</p>
         </div>
         <div class="export-workspace-body">
           <div class="export-workspace-stage-group">
@@ -3691,16 +3855,34 @@ function exportPageMarkup() {
           <div class="export-png-review-card">
             <div class="export-workspace-stage-head export-png-review-head">
               <span>PNG Review</span>
-              <strong>${registeredFrames.length} frames</strong>
+              <div class="export-png-review-head-actions">
+                <button
+                  type="button"
+                  class="secondary-btn control-btn"
+                  data-action="review-frame-prev"
+                  ${registeredFrames.length > 1 ? '' : 'disabled'}
+                >
+                  Prev
+                </button>
+                <strong>${registeredFrames.length} frames</strong>
+                <button
+                  type="button"
+                  class="secondary-btn control-btn"
+                  data-action="review-frame-next"
+                  ${registeredFrames.length > 1 ? '' : 'disabled'}
+                >
+                  Next
+                </button>
+              </div>
             </div>
             <div class="export-png-review-stage">
               ${registeredFrames.length
                 ? `
                   <div class="export-png-review-stack">
-                    ${registeredFrames.map((item, index) => `
+                    ${reviewStackFrames.map((item, index) => `
                       <div
-                        class="export-png-review-item"
-                        style="z-index:${index + 1};"
+                        class="export-png-review-item ${item.id === activeReviewFrame?.id ? 'active' : ''}"
+                        style="z-index:${index + 1};width:${Math.max(1, (item.previewWidth ?? reviewReferenceWidth) * reviewScale)}px;height:${Math.max(1, (item.previewHeight ?? reviewReferenceHeight) * reviewScale)}px;"
                       >
                         <img
                           src="${escapeHtml(item.previewPngDataUrl)}"
@@ -3715,10 +3897,15 @@ function exportPageMarkup() {
             <div class="export-png-review-list">
               ${registeredFrames.length
                 ? registeredFrames.map((item) => `
-                  <div class="export-png-review-chip">
+                  <button
+                    type="button"
+                    class="export-png-review-chip ${item.id === activeReviewFrame?.id ? 'active' : ''}"
+                    data-action="select-review-frame"
+                    data-frame-export-id="${escapeHtml(item.id)}"
+                  >
                     <span>${escapeHtml(item.customName || item.fileName)}</span>
                     <strong>${escapeHtml(item.animationName)}</strong>
-                  </div>
+                  </button>
                 `).join('')
                 : '<p class="preview-stack-empty">Chưa có frame nào được đưa vào khu PNG Review.</p>'}
             </div>
@@ -3982,7 +4169,7 @@ function render() {
         ${state.uiMode === 'landing'
           ? ''
           : `
-        <section class="hero-card">
+        <section class="hero-card ${state.uiTransition ? 'is-entering' : ''}">
           <div class="hero-header">
             <div>
               <p class="eyebrow app-title">Animation Preview App</p>
@@ -4094,11 +4281,13 @@ function render() {
         </section>
         `}
 
-        ${state.uiMode === 'landing'
-          ? landingPageMarkup()
-          : (state.uiMode === 'preview' ? previewPanelMarkup() : exportPageMarkup())}
+        <section class="mode-page-shell mode-page-${state.uiMode} ${state.uiTransition ? 'is-entering' : ''}">
+          ${state.uiMode === 'landing'
+            ? landingPageMarkup()
+            : (state.uiMode === 'preview' ? previewPanelMarkup() : exportPageMarkup())}
+        </section>
 
-        <footer class="app-footer">
+        <footer class="app-footer ${state.uiTransition ? 'is-entering' : ''}">
           <p>POWERED BY TITI X BESDEN</p>
         </footer>
       </main>
