@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: Existing tag to publish (example: v1.0.0)
+        description: "Existing tag to publish (example: v1.0.0)"
         required: true
         type: string
 
