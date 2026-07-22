@@ -1312,12 +1312,15 @@ select:disabled {
 
 .mode-landing-card-preview {
   background:
-    radial-gradient(circle at 80% 18%, rgba(112, 156, 255, 0.22), transparent 28%),
+    radial-gradient(circle at 82% 16%, rgba(112, 156, 255, 0.1), transparent 30%),
     linear-gradient(145deg, rgba(24, 31, 49, 0.99), rgba(13, 17, 28, 0.98));
 }
 
 .mode-landing-card-preview:hover {
   border-color: rgba(140, 182, 255, 0.34);
+  background:
+    radial-gradient(circle at 82% 16%, rgba(123, 168, 255, 0.22), transparent 32%),
+    linear-gradient(145deg, rgba(24, 31, 49, 0.99), rgba(13, 17, 28, 0.98));
   box-shadow:
     0 46px 120px rgba(10, 18, 36, 0.5),
     0 0 42px rgba(91, 140, 255, 0.24),
@@ -1368,12 +1371,15 @@ select:disabled {
 
 .mode-landing-card-export {
   background:
-    radial-gradient(circle at 82% 20%, rgba(80, 219, 239, 0.12), transparent 24%),
+    radial-gradient(circle at 84% 18%, rgba(80, 219, 239, 0.06), transparent 28%),
     linear-gradient(145deg, rgba(10, 22, 29, 0.99), rgba(6, 11, 16, 0.98));
 }
 
 .mode-landing-card-export:hover {
   border-color: rgba(122, 239, 226, 0.3);
+  background:
+    radial-gradient(circle at 84% 18%, rgba(89, 231, 220, 0.16), transparent 30%),
+    linear-gradient(145deg, rgba(10, 22, 29, 0.99), rgba(6, 11, 16, 0.98));
   box-shadow:
     0 46px 120px rgba(5, 16, 18, 0.5),
     0 0 42px rgba(80, 219, 239, 0.18),
@@ -1799,6 +1805,9 @@ select:disabled {
 
 .theme-light .mode-landing-card-preview:hover {
   border-color: rgba(83, 124, 233, 0.34);
+  background:
+    radial-gradient(circle at 82% 16%, rgba(112, 145, 255, 0.16), transparent 32%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.99), rgba(243, 247, 255, 0.99));
   box-shadow:
     0 40px 82px rgba(53, 89, 173, 0.18),
     0 0 42px rgba(90, 135, 255, 0.16),
@@ -1808,6 +1817,9 @@ select:disabled {
 
 .theme-light .mode-landing-card-export:hover {
   border-color: rgba(31, 169, 161, 0.28);
+  background:
+    radial-gradient(circle at 84% 18%, rgba(99, 205, 198, 0.14), transparent 30%),
+    linear-gradient(145deg, rgba(252, 254, 255, 0.99), rgba(241, 249, 247, 0.99));
   box-shadow:
     0 40px 82px rgba(44, 124, 118, 0.14),
     0 0 42px rgba(76, 208, 199, 0.14),
@@ -1834,13 +1846,13 @@ select:disabled {
 
 .theme-light .mode-landing-card-preview {
   background:
-    radial-gradient(circle at 80% 18%, rgba(112, 145, 255, 0.18), transparent 28%),
+    radial-gradient(circle at 82% 16%, rgba(112, 145, 255, 0.08), transparent 30%),
     linear-gradient(145deg, rgba(255, 255, 255, 0.99), rgba(243, 247, 255, 0.99));
 }
 
 .theme-light .mode-landing-card-export {
   background:
-    radial-gradient(circle at 82% 20%, rgba(99, 205, 198, 0.14), transparent 24%),
+    radial-gradient(circle at 84% 18%, rgba(99, 205, 198, 0.06), transparent 28%),
     linear-gradient(145deg, rgba(252, 254, 255, 0.99), rgba(241, 249, 247, 0.99));
 }
 
