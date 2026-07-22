@@ -1,0 +1,57 @@
+name: Release Public Download
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing tag to publish (example: v1.0.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-public-${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - if: github.event_name == 'workflow_dispatch'
+        name: Checkout release tag
+        run: git checkout refs/tags/${{ inputs.tag_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run make:win
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: animation-preview-windows-release
+          path: |
+            out/make/**/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            out/make/**/*.exe
+          fail_on_unmatched_files: true
