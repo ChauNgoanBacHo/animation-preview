@@ -2970,6 +2970,21 @@ select:disabled {
   font-weight: 600;
 }
 
+.preview-context-action-danger {
+  border-color: color-mix(in srgb, var(--danger) 24%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+
+.preview-context-action-danger strong {
+  color: color-mix(in srgb, var(--danger) 72%, var(--text));
+}
+
+.preview-context-action-danger:hover {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 42%, transparent);
+}
+
 .preview-context-action:disabled {
   opacity: 0.5;
   cursor: not-allowed;

@@ -2783,6 +2783,12 @@ function bindEvents() {
         toggleAnimationList(true);
         render();
       }
+    } else if (action === 'remove-context-preview-instance') {
+      const instanceId = state.preview.contextMenu.instanceId;
+      if (instanceId) {
+        closePreviewContextMenu();
+        removePreviewInstance(instanceId);
+      }
     } else if (action === 'register-frame-from-context') {
       const instanceId = state.preview.contextMenu.instanceId;
       if (instanceId) {
@@ -3345,6 +3351,9 @@ function previewContextMenuMarkup() {
             <strong>${file.animations.length}</strong>
           </button>
         `}
+      <button type="button" class="preview-context-action preview-context-action-danger" data-action="remove-context-preview-instance">
+        <span>Clear</span>
+      </button>
     </div>
   `;
 }
