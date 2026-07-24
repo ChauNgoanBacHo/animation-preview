@@ -77,7 +77,9 @@ const state = {
     soundOffsetMs: 0,
     soundAudio: null,
     selectedSoundId: '',
-    animationListOpen: false,
+    animationListOpen: true,
+    animationListPos: 'left',
+    animationListXY: null,
     instances: [],
   },
   export: {
@@ -256,6 +258,7 @@ function createPreviewInstance(fileId) {
     elapsed: 0,
     duration: 0,
     zoom: 1,
+    position: { x: 0, y: 0 },
     sequence: [],
     sequenceLoopLast: true,
     sequenceRunning: false,
@@ -1123,6 +1126,12 @@ function toggleAnimationList(forceValue) {
   render();
 }
 
+function toggleAnimationListPosition() {
+  state.preview.animationListPos = state.preview.animationListPos === 'float' ? 'left' : 'float';
+  localStorage.setItem('spine-preview-animlist-pos', state.preview.animationListPos);
+  render();
+}
+
 function attachStageView() {
   if (!state.preview.stage) {
     return;
@@ -1441,6 +1450,8 @@ async function addPreviewInstance(fileId, options = {}) {
     stage.syncViewportSize();
     const center = getInitialInstanceCenter(state.preview.instances.length - 1, options.point);
     stage.centerSpineAt(spine, center.x, center.y);
+    const mid = stage.centerPoint();
+    instance.position = { x: center.x - mid.x, y: center.y - mid.y };
     instance.zoom = stage.setSpineScale(spine, 1);
     applyInstanceTimeScale(instance);
     setActivePreviewInstance(instance.id);
@@ -1502,6 +1513,7 @@ function handleTicker() {
   }
 
   setPreviewPlaybackMeta();
+  syncSpinePositionInputs();
   const currentAnimation = document.querySelector('[data-current-animation]');
   const elapsed = document.querySelector('[data-elapsed]');
   const progress = document.querySelector('[data-progress]');
@@ -1561,7 +1573,6 @@ function handleAnimationChange(value) {
 
   stopCurrentSound();
   clearActiveSequence();
-  state.preview.animationListOpen = false;
   instance.currentAnimation = value;
   instance.duration = SpineStage.animationDuration(instance.spine, value);
   instance.elapsed = 0;
@@ -1811,10 +1822,51 @@ function resetZoom() {
 
   state.preview.stage.resetSpineTransform(instance.spine);
   instance.zoom = 1;
+  instance.position = { x: 0, y: 0 };
   syncPreviewStateFromInstance(instance);
   state.preview.stage.renderOnce();
   document.querySelectorAll('[data-zoom-value]').forEach((zoomValue) => {
     zoomValue.textContent = '100%';
+  });
+}
+
+// Stage position of a spine, tracked as an offset from the viewport center so
+// 0,0 always reads as "centered". Tracked on the instance rather than derived
+// from the spine bounds, which drift with the animated pose every frame.
+function getActiveSpinePosition() {
+  return getActivePreviewInstance()?.position ?? { x: 0, y: 0 };
+}
+
+function moveActiveSpineTo(x, y) {
+  const instance = getActivePreviewInstance();
+  if (!state.preview.stage || !instance?.spine) {
+    return;
+  }
+
+  state.preview.stage.moveSpineBy(instance.spine, x - instance.position.x, y - instance.position.y);
+  instance.position = { x, y };
+  state.preview.stage.renderOnce();
+}
+
+function setActiveSpinePosition(axis, rawValue) {
+  const value = Number.parseFloat(rawValue);
+  const next = { ...getActiveSpinePosition(), [axis]: Number.isFinite(value) ? value : 0 };
+  moveActiveSpineTo(next.x, next.y);
+}
+
+function resetActiveSpinePosition() {
+  moveActiveSpineTo(0, 0);
+  syncSpinePositionInputs();
+}
+
+function syncSpinePositionInputs() {
+  const position = getActiveSpinePosition();
+  document.querySelectorAll('[data-spine-position-input]').forEach((input) => {
+    // Never fight the field the user is currently typing into.
+    if (!(input instanceof HTMLInputElement) || input === document.activeElement) {
+      return;
+    }
+    input.value = String(Math.round(position[input.dataset.spinePositionInput] ?? 0));
   });
 }
 
@@ -1877,6 +1929,7 @@ function bindPanEvents() {
     drag.lastX = event.clientX;
     drag.lastY = event.clientY;
     state.preview.stage.moveSpineBy(instance.spine, deltaX, deltaY);
+    instance.position = { x: instance.position.x + deltaX, y: instance.position.y + deltaY };
     state.preview.stage.renderOnce();
   });
 
@@ -1893,6 +1946,79 @@ function bindPanEvents() {
 
   window.addEventListener('pointerup', endPan);
   window.addEventListener('pointercancel', endPan);
+}
+
+function bindAnimationOverlayDragEvents() {
+  const drag = { active: false, pointerId: null, node: null, offsetX: 0, offsetY: 0 };
+
+  app.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || state.preview.animationListPos !== 'float') {
+      return;
+    }
+    // The position toggle lives in the drag strip; let it click through.
+    if (!event.target.closest('[data-animation-overlay-drag]') || event.target.closest('button')) {
+      return;
+    }
+
+    const node = event.target.closest('[data-animation-overlay]');
+    const parent = node?.offsetParent;
+    if (!node || !parent) {
+      return;
+    }
+
+    event.preventDefault();
+    const box = node.getBoundingClientRect();
+    drag.active = true;
+    drag.pointerId = event.pointerId;
+    drag.node = node;
+    drag.offsetX = event.clientX - box.left;
+    drag.offsetY = event.clientY - box.top;
+    node.classList.add('is-dragging');
+  });
+
+  window.addEventListener('pointermove', (event) => {
+    if (!drag.active || event.pointerId !== drag.pointerId) {
+      return;
+    }
+
+    const parent = drag.node.offsetParent;
+    const parentBox = parent.getBoundingClientRect();
+    const x = clampOverlayCoord(event.clientX - drag.offsetX - parentBox.left, parentBox.width - drag.node.offsetWidth);
+    const y = clampOverlayCoord(event.clientY - drag.offsetY - parentBox.top, parentBox.height - drag.node.offsetHeight);
+    state.preview.animationListXY = { x, y };
+    drag.node.style.left = `${x}px`;
+    drag.node.style.top = `${y}px`;
+    drag.node.style.bottom = 'auto';
+  });
+
+  const endDrag = (event) => {
+    if (!drag.active || (event.pointerId !== undefined && event.pointerId !== drag.pointerId)) {
+      return;
+    }
+    drag.active = false;
+    drag.pointerId = null;
+    drag.node.classList.remove('is-dragging');
+    drag.node = null;
+    localStorage.setItem('spine-preview-animlist-xy', JSON.stringify(state.preview.animationListXY));
+  };
+
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', endDrag);
+}
+
+function readStoredAnimationListXY() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem('spine-preview-animlist-xy') ?? 'null');
+    return Number.isFinite(parsed?.x) && Number.isFinite(parsed?.y)
+      ? { x: parsed.x, y: parsed.y }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function clampOverlayCoord(value, max) {
+  return Math.round(Math.max(0, Math.min(value, Math.max(0, max))));
 }
 
 function bindCanvasSizeOverlayEvents() {
@@ -1975,6 +2101,7 @@ function bindCanvasSizeOverlayEvents() {
 function bindEvents() {
   bindPanEvents();
   bindCanvasSizeOverlayEvents();
+  bindAnimationOverlayDragEvents();
 
   app.addEventListener('click', async (event) => {
     const action = event.target.closest('[data-action]')?.dataset.action;
@@ -2001,6 +2128,8 @@ function bindEvents() {
       await handleScanSoundFolder();
     } else if (action === 'toggle-animation-list') {
       toggleAnimationList();
+    } else if (action === 'toggle-animation-list-position') {
+      toggleAnimationListPosition();
     } else if (action === 'select-animation-item') {
       const animationName = event.target.closest('[data-animation-name]')?.dataset.animationName ?? '';
       handleAnimationChange(animationName);
@@ -2010,6 +2139,8 @@ function bindEvents() {
       restartAnimation();
     } else if (action === 'toggle-loop') {
       toggleLoop();
+    } else if (action === 'reset-spine-position') {
+      resetActiveSpinePosition();
     } else if (action === 'zoom-in') {
       zoomBy(ZOOM_STEP);
     } else if (action === 'zoom-out') {
@@ -2190,6 +2321,8 @@ function bindEvents() {
       setCanvasAnchorValue('x', target.value);
     } else if (target.matches('[data-canvas-anchor-y-input]')) {
       setCanvasAnchorValue('y', target.value);
+    } else if (target.matches('[data-spine-position-input]')) {
+      setActiveSpinePosition(target.dataset.spinePositionInput, target.value);
     } else if (target.matches('[data-frame-name-input]')) {
       const frameId = target.closest('[data-frame-export-id]')?.dataset.frameExportId ?? '';
       if (frameId) {
@@ -2322,6 +2455,68 @@ function backgroundPickerMarkup() {
 // isActive controls the drag handle only — background boxes (kept visible
 // because that spine already has a registered frame) are just a passive
 // reminder of where their canvas sits, not interactively resizable.
+function animationOverlayMarkup(activeFile) {
+  if (!activeFile) {
+    return '';
+  }
+
+  const items = activeFile.animations
+    .map((name) => {
+      const duration = state.preview.spine ? SpineStage.animationDuration(state.preview.spine, name) : 0;
+      return `
+        <button
+          class="animation-list-item ${name === state.preview.currentAnimation ? 'active' : ''}"
+          data-action="select-animation-item"
+          data-animation-name="${escapeHtml(name)}"
+          type="button"
+        >
+          <span>${escapeHtml(name)}</span>
+          <strong>${formatAnimationDuration(duration)}</strong>
+        </button>
+      `;
+    })
+    .join('');
+
+  const isFloat = state.preview.animationListPos === 'float';
+  const xy = state.preview.animationListXY;
+  // Float keeps its dragged spot via inline left/top; bottom must yield to it.
+  const style = isFloat && xy ? `style="left:${xy.x}px;top:${xy.y}px;bottom:auto;"` : '';
+
+  return `
+    <div
+      class="animation-overlay animation-overlay-${isFloat ? 'float' : 'left'} ${state.preview.animationListOpen ? 'open' : ''}"
+      data-animation-overlay
+      ${style}
+    >
+      <button
+        class="animation-overlay-toggle"
+        data-action="toggle-animation-list"
+        type="button"
+        aria-expanded="${state.preview.animationListOpen ? 'true' : 'false'}"
+      >
+        <span>Anim List</span>
+        <strong>${activeFile.animations.length}</strong>
+      </button>
+      <div class="animation-overlay-panel">
+        <div class="animation-overlay-head" data-animation-overlay-drag>
+          <span>Animations</span>
+          <button
+            class="animation-overlay-pos-btn"
+            data-action="toggle-animation-list-position"
+            type="button"
+            title="${isFloat ? 'Dock sang bên trái' : 'Chuyển thành popup nổi (kéo được)'}"
+          >
+            ${isFloat ? 'Dock left' : 'Float'}
+          </button>
+        </div>
+        <div class="animation-overlay-list">
+          ${items || '<p class="animation-list-empty">Chưa có animation.</p>'}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function canvasSizeOverlayMarkup(instance, isActive) {
   const geometry = computeCanvasBoxGeometry(instance);
   if (!geometry) {
@@ -2598,44 +2793,10 @@ function previewPanelMarkup() {
       `,
     )
     .join('');
-  const animationOverlayItems = activeFile
-    ? activeFile.animations
-        .map((name) => {
-          const duration = state.preview.spine ? SpineStage.animationDuration(state.preview.spine, name) : 0;
-          return `
-            <button
-              class="animation-list-item ${name === state.preview.currentAnimation ? 'active' : ''}"
-              data-action="select-animation-item"
-              data-animation-name="${escapeHtml(name)}"
-              type="button"
-            >
-              <span>${escapeHtml(name)}</span>
-              <strong>${formatAnimationDuration(duration)}</strong>
-            </button>
-          `;
-        })
-        .join('')
-    : '';
-  const animationOverlay = hasFiles
-    ? `
-        <div class="animation-overlay ${state.preview.animationListOpen ? 'open' : ''}">
-          <button
-            class="animation-overlay-toggle"
-            data-action="toggle-animation-list"
-            type="button"
-            aria-expanded="${state.preview.animationListOpen ? 'true' : 'false'}"
-          >
-            <span>Anim List</span>
-            <strong>${activeFile.animations.length}</strong>
-          </button>
-          <div class="animation-overlay-panel">
-            <div class="animation-overlay-list">
-              ${animationOverlayItems || '<p class="animation-list-empty">Chưa có animation.</p>'}
-            </div>
-          </div>
-        </div>
-      `
-    : '';
+  const animationOverlay = hasFiles ? animationOverlayMarkup(activeFile) : '';
+  const spinePosition = getActiveSpinePosition();
+  const spinePositionX = Math.round(spinePosition.x);
+  const spinePositionY = Math.round(spinePosition.y);
   const controlsMarkup = hasFiles
     ? `
         <div class="button-row">
@@ -2722,6 +2883,37 @@ function previewPanelMarkup() {
             <button class="secondary-btn control-btn" data-action="zoom-reset" ${hasFiles ? '' : 'disabled'}>Reset</button>
             <button class="secondary-btn control-btn" data-action="zoom-in" ${hasFiles ? '' : 'disabled'}>+</button>
           </div>
+        </div>
+
+        <div class="zoom-controls">
+          <span>Position</span>
+          <div class="button-row zoom-button-row">
+            <button class="secondary-btn control-btn" data-action="reset-spine-position" ${hasFiles ? '' : 'disabled'}>Center</button>
+          </div>
+        </div>
+        <div class="anchor-fields position-fields">
+          <label class="field anchor-field">
+            <span>X (px)</span>
+            <input
+              type="number"
+              step="1"
+              data-spine-position-input="x"
+              value="${spinePositionX}"
+              ${hasFiles ? '' : 'disabled'}
+              title="Lệch so với tâm khung preview"
+            />
+          </label>
+          <label class="field anchor-field">
+            <span>Y (px)</span>
+            <input
+              type="number"
+              step="1"
+              data-spine-position-input="y"
+              value="${spinePositionY}"
+              ${hasFiles ? '' : 'disabled'}
+              title="Lệch so với tâm khung preview"
+            />
+          </label>
         </div>
 
         ${backgroundPickerMarkup()}
@@ -2867,24 +3059,6 @@ function expandedPreviewMarkup() {
         )
         .join('')
     : '';
-  const animationOverlayItems = activeFile
-    ? activeFile.animations
-        .map((name) => {
-          const duration = state.preview.spine ? SpineStage.animationDuration(state.preview.spine, name) : 0;
-          return `
-            <button
-              class="animation-list-item ${name === state.preview.currentAnimation ? 'active' : ''}"
-              data-action="select-animation-item"
-              data-animation-name="${escapeHtml(name)}"
-              type="button"
-            >
-              <span>${escapeHtml(name)}</span>
-              <strong>${formatAnimationDuration(duration)}</strong>
-            </button>
-          `;
-        })
-        .join('')
-    : '';
 
   return `
     <div class="preview-modal" data-preview-modal>
@@ -2932,26 +3106,7 @@ function expandedPreviewMarkup() {
               </div>
             `
             : ''}
-          ${hasFiles
-            ? `
-              <div class="animation-overlay ${state.preview.animationListOpen ? 'open' : ''}">
-                <button
-                  class="animation-overlay-toggle"
-                  data-action="toggle-animation-list"
-                  type="button"
-                  aria-expanded="${state.preview.animationListOpen ? 'true' : 'false'}"
-                >
-                  <span>Anim List</span>
-                  <strong>${activeFile.animations.length}</strong>
-                </button>
-                <div class="animation-overlay-panel">
-                  <div class="animation-overlay-list">
-                    ${animationOverlayItems || '<p class="animation-list-empty">Chưa có animation.</p>'}
-                  </div>
-                </div>
-              </div>
-            `
-            : ''}
+          ${hasFiles ? animationOverlayMarkup(activeFile) : ''}
         </div>
       </div>
     </div>
@@ -3233,6 +3388,9 @@ function initialize() {
     : '';
   state.theme = localStorage.getItem('spine-preview-theme') === 'light' ? 'light' : 'dark';
   state.background = localStorage.getItem('spine-preview-background') || 'scene';
+  state.preview.animationListPos =
+    localStorage.getItem('spine-preview-animlist-pos') === 'float' ? 'float' : 'left';
+  state.preview.animationListXY = readStoredAnimationListXY();
   if (!SOUND_FEATURE_ENABLED) {
     state.soundFiles = [];
     state.soundScanning = false;

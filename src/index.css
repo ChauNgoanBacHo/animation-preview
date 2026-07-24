@@ -1600,6 +1600,63 @@ select:disabled {
   align-items: flex-start;
   gap: 10px;
   max-width: min(360px, calc(100% - 36px));
+  /* The container can be taller than its content (left rail), so only its
+     real children may swallow clicks meant for the stage behind it. */
+  pointer-events: none;
+}
+
+.animation-overlay-toggle,
+.animation-overlay-panel {
+  pointer-events: auto;
+}
+
+/* Docked: a left rail that uses the full viewport height. */
+.animation-overlay-left {
+  top: 18px;
+  bottom: 18px;
+}
+
+.animation-overlay-left.open .animation-overlay-panel {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+.animation-overlay-left .animation-overlay-list {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+.animation-overlay-float.is-dragging {
+  user-select: none;
+}
+
+.animation-overlay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 4px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.animation-overlay-float .animation-overlay-head {
+  cursor: move;
+}
+
+.animation-overlay-pos-btn {
+  border: 1px solid var(--secondary-line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: var(--secondary-bg);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+  letter-spacing: 0.04em;
 }
 
 .animation-overlay-toggle {
@@ -1634,11 +1691,14 @@ select:disabled {
 }
 
 .animation-overlay.open .animation-overlay-panel {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .animation-overlay-list {
   display: grid;
+  align-content: start;
   gap: 8px;
   max-height: min(300px, calc(48vh - 20px));
   overflow: auto;
@@ -2066,6 +2126,17 @@ select:disabled {
 .anchor-field {
   margin-top: 0;
   min-width: 100px;
+}
+
+/* Two equal columns instead of the wrap-when-tight default. */
+.position-fields {
+  margin-top: 10px;
+  flex-wrap: nowrap;
+}
+
+.position-fields > .anchor-field {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .anchor-field input[type='number'] {
