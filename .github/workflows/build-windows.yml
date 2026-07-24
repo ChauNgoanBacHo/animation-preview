@@ -34,8 +34,13 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
-      - if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+      # Artifacts above always require a signed-in GitHub account to download.
+      # Release assets on a public repo do not, so every build also lands in a
+      # release: the tag itself for tags, a rolling "dev" prerelease otherwise.
+      - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'Dev build' }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
           files: |
             out/make/**/*.exe
