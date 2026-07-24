@@ -2585,6 +2585,36 @@ select:disabled {
   border: 1px solid var(--success-line);
 }
 
+.status.warning,
+.validation-warning-block {
+  color: var(--error-text);
+  background: color-mix(in srgb, var(--error-bg) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--error-line));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 14px 28px rgba(0, 0, 0, 0.12);
+}
+
+.validation-warning-block {
+  margin-top: 12px;
+}
+
+.validation-warning-block strong {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--danger);
+  letter-spacing: 0.02em;
+}
+
+.validation-warning-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.validation-warning-list li + li {
+  margin-top: 6px;
+}
+
 .card-header {
   justify-content: space-between;
   gap: 16px;

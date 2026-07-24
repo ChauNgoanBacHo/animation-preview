@@ -10,6 +10,7 @@ const READY_FADE_DURATION_MS = 320;
 const SOUND_FEATURE_ENABLED = false;
 const EXPORT_FEATURE_ENABLED = true;
 const EXPORT_PADDING_PX = 8;
+const ANIMATION_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const CHECKER_BG =
   'repeating-conic-gradient(#9aa3ad 0% 25%, #cdd4db 0% 50%) 50% / 24px 24px';
@@ -57,6 +58,7 @@ const state = {
   soundScanning: false,
   error: '',
   success: '',
+  validationWarnings: [],
   preview: {
     stage: null,
     spine: null,
@@ -223,6 +225,10 @@ function updateSuccess(message = '') {
     state.error = '';
   }
   render();
+}
+
+function updateValidationWarnings(warnings = []) {
+  state.validationWarnings = Array.isArray(warnings) ? warnings : [];
 }
 
 function setUiMode(mode) {
@@ -802,6 +808,61 @@ function dedupeFileNames(names) {
   });
 }
 
+function animationNameIssues(name) {
+  const issues = [];
+  if (!name) {
+    return ['empty'];
+  }
+  if (/^\d/.test(name)) {
+    issues.push('starts with a number');
+  }
+  if (/\s/.test(name)) {
+    issues.push('contains whitespace');
+  }
+  if (!ANIMATION_NAME_PATTERN.test(name) && !issues.length) {
+    issues.push('contains unsupported characters');
+  }
+  return issues;
+}
+
+function collectAnimationSyntaxWarnings(files) {
+  return files.flatMap((file) => {
+    const animations = Array.isArray(file?.animations) ? file.animations : [];
+    const invalidAnimations = animations
+      .map((name) => ({ name, issues: animationNameIssues(name) }))
+      .filter((entry) => entry.issues.length);
+
+    if (!invalidAnimations.length) {
+      return [];
+    }
+
+    const fileLabel = file.relativeName || file.fileName || file.jsonPath || 'Unknown file';
+    return invalidAnimations.map((entry) => `${fileLabel}: ${entry.name} (${entry.issues.join(', ')})`);
+  });
+}
+
+function formatAnimationWarnings(warnings) {
+  if (!warnings.length) {
+    return '';
+  }
+  return ` Warning: invalid animation syntax -> ${warnings.join('; ')}.`;
+}
+
+function validationWarningMarkup() {
+  if (!state.validationWarnings.length) {
+    return '';
+  }
+
+  return `
+    <div class="status warning validation-warning-block">
+      <strong>Animation Name Warning</strong>
+      <ul class="validation-warning-list">
+        ${state.validationWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}
+      </ul>
+    </div>
+  `;
+}
+
 async function handleSelectExportFolder() {
   const selectExportFolder = window.spinePreview.selectExportFolder
     ?? window.spinePreview.selectFolder;
@@ -815,6 +876,7 @@ async function handleSelectExportFolder() {
     state.export.outputDir = folder;
     state.export.lastSummary = '';
     updateSuccess('');
+    updateValidationWarnings([]);
     render();
   }
 }
@@ -838,11 +900,13 @@ async function handleBatchExportPng() {
   state.export.isExporting = true;
   state.export.lastSummary = '';
   updateStatus('');
+  updateValidationWarnings([]);
   render();
 
   try {
     const anchor = getExportAnchor();
     const payloadFiles = [];
+    const animationWarnings = collectAnimationSyntaxWarnings(files);
 
     for (const file of files) {
       const packageData = await exportFileToSpinePackageData(file, anchor);
@@ -867,6 +931,7 @@ async function handleBatchExportPng() {
     }
 
     state.export.lastSummary = `${result.writtenFiles.length} spine packages exported.`;
+    updateValidationWarnings(animationWarnings);
     updateSuccess(state.export.lastSummary);
   } catch (error) {
     updateStatus(error instanceof Error ? error.message : 'Không thể export PNG.');
@@ -1176,6 +1241,7 @@ async function handleExportFrameQueue() {
   state.export.isExporting = true;
   state.export.lastSummary = '';
   updateStatus('');
+  updateValidationWarnings([]);
   render();
 
   try {
@@ -1184,6 +1250,10 @@ async function handleExportFrameQueue() {
     );
     const uniqueNames = dedupeFileNames(rawNames);
     const payloadFiles = [];
+    const queuedFiles = [...new Set(items.map((item) => item.fileId))]
+      .map((fileId) => getFileById(fileId))
+      .filter(Boolean);
+    const animationWarnings = collectAnimationSyntaxWarnings(queuedFiles);
 
     for (let index = 0; index < items.length; index += 1) {
       const item = items[index];
@@ -1227,6 +1297,7 @@ async function handleExportFrameQueue() {
     state.export.frameQueue = [];
     state.export.lastOutputDir = outputDir;
     state.export.lastSummary = `✓ Đã xuất ${result.writtenFiles.length} file.`;
+    updateValidationWarnings(animationWarnings);
     updateSuccess(state.export.lastSummary);
   } catch (error) {
     updateStatus(error instanceof Error ? error.message : 'Không thể export sprite frame.');
@@ -1470,6 +1541,7 @@ async function handleScanFolder() {
   state.export.selectedFileIds = [];
   state.export.lastSummary = '';
   state.export.frameQueue = [];
+  updateValidationWarnings([]);
   resetExportModalState();
   state.preview.instances = [];
   state.preview.activeInstanceId = '';
@@ -1496,6 +1568,8 @@ async function handleScanFolder() {
     }
 
     updateStatus('');
+    updateValidationWarnings(collectAnimationSyntaxWarnings(state.files));
+    updateSuccess(`${state.files.length} spine files scanned.`);
     render();
   } catch (error) {
     updateStatus(error instanceof Error ? error.message : 'Không thể scan folder.');
@@ -4107,6 +4181,7 @@ function exportPanelMarkup() {
       </div>
 
       <p class="navigator-result export-result">${state.export.selectedFileIds.length} files selected${state.export.lastSummary ? ` • ${escapeHtml(state.export.lastSummary)}` : ''}</p>
+      ${validationWarningMarkup()}
       <div class="spine-chip-list export-chip-list">
         ${exportButtons}
       </div>
@@ -4222,8 +4297,9 @@ function render() {
             <button class="primary-btn accent" data-action="scan-folder" ${state.scanning ? 'disabled' : ''}>${state.scanning ? 'Scanning...' : 'Scan'}</button>
           </div>
           ${hasFiles
-            ? `<p class="navigator-result source-result">${state.files.length} spine files scanned.</p>`
+            ? `<p class="navigator-result source-result">${escapeHtml(state.success || `${state.files.length} spine files scanned.`)}</p>`
             : ''}
+          ${validationWarningMarkup()}
 
           ${SOUND_FEATURE_ENABLED
             ? `
