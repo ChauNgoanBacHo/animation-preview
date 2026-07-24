@@ -10,6 +10,11 @@ const READY_FADE_DURATION_MS = 320;
 const SOUND_FEATURE_ENABLED = false;
 const EXPORT_FEATURE_ENABLED = false;
 
+const CONTROL_TABS = [
+  { id: 'playback', label: 'Playback' },
+  { id: 'export', label: 'Sprite Frame Export' },
+];
+
 const CHECKER_BG =
   'repeating-conic-gradient(#9aa3ad 0% 25%, #cdd4db 0% 50%) 50% / 24px 24px';
 
@@ -46,6 +51,8 @@ const state = {
   theme: 'dark',
   background: 'scene',
   uiMode: 'preview',
+  controlTab: 'playback',
+  contextMenu: { open: false, x: 0, y: 0, instanceId: '' },
   loading: true,
   readyAnimating: false,
   scanning: false,
@@ -912,6 +919,44 @@ function syncCanvasSizeOverlay(instances) {
 function removeFrameExport(frameId) {
   state.export.frameQueue = state.export.frameQueue.filter((item) => item.id !== frameId);
   render();
+}
+
+function registeredFramesOf(instance) {
+  return instance
+    ? state.export.frameQueue.filter((item) => item.fileId === instance.fileId)
+    : [];
+}
+
+function openStageContextMenu(clientX, clientY, instanceId) {
+  // Keep the menu inside the window; sizes are the CSS min-width / two-row height.
+  state.contextMenu = {
+    open: true,
+    x: Math.max(8, Math.min(clientX, window.innerWidth - 216)),
+    y: Math.max(8, Math.min(clientY, window.innerHeight - 110)),
+    instanceId,
+  };
+  render();
+}
+
+function closeStageContextMenu() {
+  if (!state.contextMenu.open) {
+    return;
+  }
+  state.contextMenu = { open: false, x: 0, y: 0, instanceId: '' };
+  render();
+}
+
+function removeContextFrames() {
+  const instance = getPreviewInstanceById(state.contextMenu.instanceId);
+  const removed = registeredFramesOf(instance);
+  if (!removed.length) {
+    closeStageContextMenu();
+    return;
+  }
+
+  state.export.frameQueue = state.export.frameQueue.filter((item) => item.fileId !== instance.fileId);
+  state.contextMenu = { open: false, x: 0, y: 0, instanceId: '' };
+  updateSuccess(`Đã bỏ ${removed.length} frame đã đăng ký của ${removed[0].fileName}.`);
 }
 
 function updateFrameExportName(frameId, value) {
@@ -2103,6 +2148,31 @@ function bindEvents() {
   bindCanvasSizeOverlayEvents();
   bindAnimationOverlayDragEvents();
 
+  app.addEventListener('contextmenu', (event) => {
+    // The open menu's backdrop covers the stage, so a second right-click lands
+    // on it — treat that as "dismiss" instead of falling through to the OS menu.
+    if (state.contextMenu.open) {
+      event.preventDefault();
+      closeStageContextMenu();
+      return;
+    }
+
+    const surface = event.target.closest('[data-preview-viewport], [data-preview-modal-viewport]');
+    if (!surface || !state.preview.stage || state.preview.isLoading) {
+      return;
+    }
+
+    event.preventDefault();
+    const instance = getPreviewInstanceBySpine(state.preview.stage.hitTest(event.clientX, event.clientY));
+    if (!instance) {
+      closeStageContextMenu();
+      return;
+    }
+
+    setActivePreviewInstance(instance.id);
+    openStageContextMenu(event.clientX, event.clientY, instance.id);
+  });
+
   app.addEventListener('click', async (event) => {
     const action = event.target.closest('[data-action]')?.dataset.action;
     if (!action) {
@@ -2199,6 +2269,16 @@ function bindEvents() {
         setActivePreviewInstance(instanceId);
         render();
       }
+    } else if (action === 'set-control-tab') {
+      state.controlTab = event.target.closest('[data-control-tab]')?.dataset.controlTab ?? 'playback';
+      render();
+    } else if (action === 'close-context-menu') {
+      closeStageContextMenu();
+    } else if (action === 'context-register-frame') {
+      state.contextMenu = { open: false, x: 0, y: 0, instanceId: '' };
+      registerFrameExport();
+    } else if (action === 'context-remove-frames') {
+      removeContextFrames();
     } else if (action === 'set-canvas-mode') {
       const mode = event.target.closest('[data-canvas-mode]')?.dataset.canvasMode ?? 'auto';
       setCanvasMode(mode);
@@ -2399,6 +2479,12 @@ function bindEvents() {
   });
 
   window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && state.contextMenu.open) {
+      event.preventDefault();
+      closeStageContextMenu();
+      return;
+    }
+
     if (event.key === 'Escape' && state.preview.expanded) {
       event.preventDefault();
       toggleExpandedPreview(false);
@@ -2541,7 +2627,7 @@ function canvasSizeOverlayMarkup(instance, isActive) {
 // A spine keeps showing its canvas box once it has a registered frame in the
 // export queue, even after focus moves to a different spine on the stage.
 function hasRegisteredFrame(instance) {
-  return state.export.frameQueue.some((item) => item.fileId === instance.fileId);
+  return registeredFramesOf(instance).length > 0;
 }
 
 function canvasOverlayInstances(activeInstance) {
@@ -2590,7 +2676,7 @@ function frameExportPanelMarkup() {
   return `
     <div class="sequence-panel">
       <div class="sequence-header">
-        <span>Sprite Frame Export</span>
+        <span>Canvas</span>
         <span>${queue.length} registered</span>
       </div>
       <div class="canvas-mode-toggle">
@@ -2943,8 +3029,6 @@ function previewPanelMarkup() {
             ${sequenceItems || '<p class="sequence-empty">Chưa có animation nào trong sequence.</p>'}
           </div>
         </div>
-
-        ${frameExportPanelMarkup()}
       `
     : `
         <div class="controls-placeholder">
@@ -3031,15 +3115,60 @@ function previewPanelMarkup() {
       </div>
 
       <div class="control-card">
-        <div class="card-header">
-          <div>
-            <p class="eyebrow">Controls</p>
-            <h2>Playback</h2>
-          </div>
+        <div class="control-tabs" role="tablist">
+          ${CONTROL_TABS.map(
+            (tab) => `
+              <button
+                type="button"
+                role="tab"
+                class="control-tab ${state.controlTab === tab.id ? 'active' : ''}"
+                data-action="set-control-tab"
+                data-control-tab="${tab.id}"
+                aria-selected="${state.controlTab === tab.id ? 'true' : 'false'}"
+              >${tab.label}</button>
+            `,
+          ).join('')}
         </div>
-        ${controlsMarkup}
+        ${state.controlTab === 'export' ? frameExportPanelMarkup() : controlsMarkup}
       </div>
     </section>
+  `;
+}
+
+function stageContextMenuMarkup() {
+  const instance = getPreviewInstanceById(state.contextMenu.instanceId);
+  if (!state.contextMenu.open || !instance) {
+    return '';
+  }
+
+  const file = getPreviewFile(instance);
+  const registered = registeredFramesOf(instance);
+  const canRegister = canRegisterFrame();
+  const item = registered.length
+    ? `
+      <button class="context-menu-item danger" type="button" data-action="context-remove-frames">
+        Remove registered frame${registered.length > 1 ? `s (${registered.length})` : ''}
+      </button>
+    `
+    : `
+      <button
+        class="context-menu-item"
+        type="button"
+        data-action="context-register-frame"
+        ${canRegister ? '' : 'disabled'}
+        title="${canRegister ? '' : 'Pause animation ở frame hợp lệ trước'}"
+      >
+        Register frame
+      </button>
+    `;
+
+  return `
+    <div class="context-menu-layer" data-action="close-context-menu">
+      <div class="context-menu" style="left:${state.contextMenu.x}px;top:${state.contextMenu.y}px;">
+        <p class="context-menu-title">${escapeHtml(file ? spineDisplayName(file) : 'Spine')}</p>
+        ${item}
+      </div>
+    </div>
   `;
 }
 
@@ -3372,6 +3501,7 @@ function render() {
       </main>
 
       ${expandedPreviewMarkup()}
+      ${stageContextMenuMarkup()}
     </div>
   `;
 
