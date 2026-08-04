@@ -1,6 +1,7 @@
 import './index.css';
 import { SpineStage } from './spineStage.js';
 import { toAssetUrl } from './shared/assetUrl.js';
+import { rootCenteredBounds } from './shared/rootCenteredBounds.mjs';
 import previewBackgroundUrl from './background.jpg';
 
 const ZOOM_STEP = 1.2;
@@ -521,7 +522,7 @@ async function renderSpinePoseToCanvas(file, options = {}) {
     // the preview overlay's anchorX/anchorY nudge. The canvas grows by twice
     // the offset (same as naturalExportSize) so the nudge can't push the
     // character past the edge and get clipped.
-    const bounds = options.lockedBounds ?? spine.getLocalBounds();
+    const bounds = options.lockedBounds ?? rootCenteredBounds(spine.getLocalBounds());
     const anchorOffset = options.anchorOffset ?? { x: 0, y: 0 };
     const minX = bounds.x;
     const minY = bounds.y;
@@ -740,7 +741,7 @@ function setActiveCanvasSizeValue(axis, rawValue) {
   instance.exportCanvasSize = { ...instance.exportCanvasSize, [axis]: normalized };
 }
 
-// The export canvas is the tight spine bounds, grown by twice the anchor
+// The export canvas is the root-bone-centered bounds, grown by twice the anchor
 // offset so nudging the character (see computeCanvasBoxGeometry) can't push
 // it past the canvas edge — matches renderSpinePoseToCanvas()'s sizing
 // exactly, so this is the "auto" / minimum size on both the numeric fields
@@ -781,20 +782,15 @@ function setCanvasMode(mode) {
 }
 
 // Every animation gets one fixed reference box, captured from its first seen
-// pose, cached on the instance keyed by animation name. This is what keeps
-// the canvas from chasing the animated pose (default behavior now, no manual
-// lock) and makes switching back to an animation reuse the same box.
+// pose and centered on the root bone (see rootCenteredBounds), cached on the
+// instance keyed by animation name. This is what keeps the canvas from chasing
+// the animated pose (default behavior now, no manual lock) and makes switching
+// back to an animation reuse the same box.
 function ensureCanvasAnchorBounds(instance) {
   const key = instance.currentAnimation || '';
   instance.canvasBoundsByAnim ??= {};
   if (!instance.canvasBoundsByAnim[key]) {
-    const bounds = instance.spine.getLocalBounds();
-    instance.canvasBoundsByAnim[key] = {
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.width,
-      height: bounds.height,
-    };
+    instance.canvasBoundsByAnim[key] = rootCenteredBounds(instance.spine.getLocalBounds());
   }
   return instance.canvasBoundsByAnim[key];
 }
@@ -831,9 +827,9 @@ function setCanvasAnchorValue(axis, rawValue) {
 }
 
 // Screen-space box geometry for the live overlay: box stays centered on the
-// animation's fixed reference bounds (not the current animated pose, and not
-// the anchor either — anchor moves the character, see below), sized in real
-// export pixels drawn at the instance's current zoom.
+// skeleton's root bone (not the current animated pose, not the artwork's
+// bounding box, and not the anchor either — anchor moves the character, see
+// below), sized in real export pixels drawn at the instance's current zoom.
 function computeCanvasBoxGeometry(instance) {
   if (!instance?.spine) {
     return null;
@@ -852,7 +848,6 @@ function computeCanvasBoxGeometry(instance) {
   const spine = instance.spine;
   const scaleX = spine.scale.x || 1;
   const scaleY = spine.scale.y || 1;
-  const local = ensureCanvasAnchorBounds(instance);
   const anchor = getCanvasAnchorOffset(instance);
 
   // Anchor moves the artwork, not the box: nudge the real on-stage character
@@ -867,8 +862,11 @@ function computeCanvasBoxGeometry(instance) {
     instance.appliedCanvasAnchor = anchor;
   }
 
-  const centerX = spine.position.x - anchor.x * scaleX + (local.x + local.width / 2) * scaleX;
-  const centerY = spine.position.y - anchor.y * scaleY + (local.y + local.height / 2) * scaleY;
+  // spine.position IS the root bone on stage, and the reference box is centered
+  // on it (rootCenteredBounds), so the box center is just the root bone minus
+  // the anchor nudge we applied to the artwork above.
+  const centerX = spine.position.x - anchor.x * scaleX;
+  const centerY = spine.position.y - anchor.y * scaleY;
 
   return {
     left: centerX - screenWidth / 2,
