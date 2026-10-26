@@ -8,6 +8,8 @@ const FPS = 20,
 const state = {
   source: localStorage.getItem("gif-source") || "",
   output: localStorage.getItem("gif-output") || "",
+  bakeChecker: localStorage.getItem("gif-bake-checker") !== "false",
+  combineSymbols: localStorage.getItem("gif-combine-symbols") === "true",
   files: [],
   configs: new Map(),
   active: "",
@@ -72,6 +74,50 @@ function clean(v) {
     .replace(/[^A-Za-z0-9_-]+/g, "_");
 }
 
+function normalizeGifAlpha(source) {
+  const pixels = new Uint8ClampedArray(source);
+  for (let index = 0; index < pixels.length; index += 4) {
+    if (pixels[index + 3] < 96) {
+      pixels[index] = 0;
+      pixels[index + 1] = 0;
+      pixels[index + 2] = 0;
+      pixels[index + 3] = 0;
+    } else {
+      // GIF only supports 1-bit alpha. Converting edge pixels to opaque here
+      // prevents semi-transparent RGB values from becoming cyan palette noise.
+      pixels[index + 3] = 255;
+    }
+  }
+  return pixels;
+}
+
+function framePixelsForExport(
+  frameCanvas,
+  bakeChecker,
+  width = SIZE,
+  height = SIZE,
+) {
+  if (!bakeChecker) {
+    return frameCanvas
+      .getContext("2d", { willReadFrequently: true })
+      .getImageData(0, 0, width, height).data;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  const cell = 24;
+  for (let y = 0; y < height; y += cell) {
+    for (let x = 0; x < width; x += cell) {
+      context.fillStyle =
+        (x / cell + y / cell) % 2 === 0 ? "#c8ced8" : "#8f99a8";
+      context.fillRect(x, y, cell, cell);
+    }
+  }
+  context.drawImage(frameCanvas, 0, 0);
+  return context.getImageData(0, 0, width, height).data;
+}
+
 function render() {
   const count = selected().length,
     total = state.files.reduce((n, f) => n + f.animations.length, 0);
@@ -79,7 +125,7 @@ function render() {
   <section class="toolbar"><label><span>Source folder</span><div><input data-source value="${esc(state.source)}" placeholder="Folder chứa Spine..."><button data-do="source">${icon("folder")}</button></div></label><button class="scan" data-do="scan" ${state.scanning ? "disabled" : ""}>${state.scanning ? "Scanning…" : "Scan Spine"}</button><i></i><label><span>GIF output</span><div><input data-output value="${esc(state.output)}" placeholder="Folder lưu GIF..."><button data-do="output">${icon("folder")}</button></div></label></section>
   ${state.error ? `<div class="notice error">${esc(state.error)}</div>` : ""}${state.status ? `<div class="notice ok">${esc(state.status)}</div>` : ""}
   <section class="workspace"><div class="headrow"><span>Spine asset</span><span>Animations · chọn skin và animation để export</span></div><div class="groups">${state.files.length ? state.files.map(groupView).join("") : emptyView()}</div></section>
-  <footer><div class="progress"><div><span>${state.exporting ? esc(state.status) : `${count} animation ready`}</span><strong>${state.exporting ? `${Math.round(state.progress * 100)}%` : "GIF · 20 FPS · 512px"}</strong></div><aside><em style="width:${state.exporting ? state.progress * 100 : 0}%"></em></aside></div><button class="export" data-do="export" ${!count || state.exporting ? "disabled" : ""}>${icon("export")} ${state.exporting ? "Exporting…" : `Export ${count} GIF${count === 1 ? "" : "s"}`}</button></footer>
+  <footer><div class="progress"><div><span>${state.exporting ? esc(state.status) : `${count} animation ready`}</span><strong>${state.exporting ? `${Math.round(state.progress * 100)}%` : state.combineSymbols ? "GROUP · 960×540" : "GIF · 20 FPS · 512px"}</strong></div><aside><em style="width:${state.exporting ? state.progress * 100 : 0}%"></em></aside></div><label class="checker-export"><input type="checkbox" data-role="combine-symbols" ${state.combineSymbols ? "checked" : ""}><span>Gộp Anim</span></label><label class="checker-export"><input type="checkbox" data-role="bake-checker" ${state.bakeChecker ? "checked" : ""}><span>Bake nền caro</span></label><button class="export" data-do="export" ${!count || state.exporting ? "disabled" : ""}>${icon("export")} ${state.exporting ? "Exporting…" : state.combineSymbols ? `Export 1 Group GIF` : `Export ${count} GIF${count === 1 ? "" : "s"}`}</button></footer>
   <aside class="preview ${state.active ? "open" : ""}"><div class="preview-title"><div><strong data-preview-name>Preview</strong><span>Loop theo đúng timeframe và skin đã chọn</span></div><div class="preview-actions"><button data-do="toggle-preview" title="Play/Pause">${state.previewPaused ? "▶" : "Ⅱ"}</button><button data-do="close" title="Đóng preview">×</button></div></div><div data-canvas class="canvas"></div>${previewTrimView()}</aside></main>`;
   mountStage();
 }
@@ -102,7 +148,7 @@ function animView(f, a) {
         )
         .join("")
     : '<option value="">Default</option>';
-  return `<div class="anim ${c.selected ? "selected" : ""} ${state.active === k ? "active" : ""}" data-key="${esc(k)}"><label class="check" title="Chọn animation để export GIF"><input type="checkbox" data-role="select" ${c.selected ? "checked" : ""}><span></span></label><button class="anim-name" data-do="preview"><b>▶</b><strong>${esc(a)}</strong><small>${fmt(d)}</small></button><label class="skin"><span>Skin</span><select data-role="skin" ${f.skins?.length ? "" : "disabled"}>${skinOptions}</select></label><div class="row-progress" data-trim-editor data-key="${esc(k)}"><div><span>${fmt(c.start)}</span><output>${fmt(c.end)}</output></div><section style="--a:${(c.start / max) * 100}%;--b:${(c.end / max) * 100}%"><i></i><b></b><input type="range" data-role="start" min="0" max="${max}" step=".01" value="${c.start}"><input type="range" data-role="end" min="0" max="${max}" step=".01" value="${c.end}"></section></div><button class="preview-row-btn" data-do="preview">Preview</button></div>`;
+  return `<div class="anim ${c.selected ? "selected" : ""} ${state.active === k ? "active" : ""}" data-key="${esc(k)}"><label class="check" title="Chọn animation để export GIF"><input type="checkbox" data-role="select" ${c.selected ? "checked" : ""}><span></span></label><button class="anim-name" data-do="preview"><b>▶</b><strong>${esc(a)}</strong></button><label class="skin"><span>Skin</span><select data-role="skin" ${f.skins?.length ? "" : "disabled"}>${skinOptions}</select></label><div class="row-progress" data-trim-editor data-key="${esc(k)}"><div><span>${fmt(c.start)}</span><output>${fmt(c.end)}</output></div><section style="--a:${(c.start / max) * 100}%;--b:${(c.end / max) * 100}%"><i></i><b></b><input type="range" data-role="start" min="0" max="${max}" step=".01" value="${c.start}"><input type="range" data-role="end" min="0" max="${max}" step=".01" value="${c.end}"></section></div><button class="preview-row-btn" data-do="preview">Preview</button></div>`;
 }
 
 function previewTrimView() {
@@ -315,18 +361,35 @@ async function encode(x, n, total) {
       SIZE / 2 - (u.y + h / 2) * spine.scale.y,
     );
     const gif = GIFEncoder();
+    const bakeChecker = state.bakeChecker || x.file.usesAdditiveBlend;
     for (let i = 0; i < samples.length; i++) {
       SpineStage.seek(spine, samples[i].time);
       stage.renderOnce();
       const frameCanvas = stage.extractCanvasRegion(0, 0, SIZE, SIZE),
-        ctx = frameCanvas.getContext("2d", { willReadFrequently: true }),
-        img = ctx.getImageData(0, 0, SIZE, SIZE),
-        palette = quantize(img.data, 256, {
+        pixels = normalizeGifAlpha(
+          framePixelsForExport(frameCanvas, bakeChecker),
+        ),
+        palette = quantize(pixels, 256, {
           format: "rgba4444",
           oneBitAlpha: true,
+          clearAlpha: true,
+          clearAlphaThreshold: 0,
+          clearAlphaColor: 0,
         }),
-        index = applyPalette(img.data, palette, "rgba4444"),
+        index = applyPalette(pixels, palette, "rgba4444"),
         transparentIndex = palette.findIndex((color) => color[3] === 0);
+      if (transparentIndex >= 0) {
+        const transparentIndexes = new Set(
+          palette
+            .map((color, paletteIndex) => (color[3] === 0 ? paletteIndex : -1))
+            .filter((paletteIndex) => paletteIndex >= 0),
+        );
+        for (let pixelIndex = 0; pixelIndex < index.length; pixelIndex += 1) {
+          if (transparentIndexes.has(index[pixelIndex])) {
+            index[pixelIndex] = transparentIndex;
+          }
+        }
+      }
       gif.writeFrame(index, SIZE, SIZE, {
         palette,
         delay: 1000 / FPS,
@@ -354,6 +417,102 @@ async function encode(x, n, total) {
     host.remove();
   }
 }
+
+async function encodeCombined(list) {
+  const width = 960,
+    height = 540;
+  const host = document.createElement("div");
+  host.className = "offscreen";
+  host.style.width = `${width}px`;
+  host.style.height = `${height}px`;
+  document.body.append(host);
+  const stage = new SpineStage(host, {
+    backgroundColor: 0x000000,
+    backgroundAlpha: 0,
+    resolution: 1,
+  });
+  stage.app.ticker.stop();
+  try {
+    const loaded = [];
+    const columns = Math.min(5, list.length);
+    const rows = Math.ceil(list.length / columns);
+    const cellWidth = width / columns;
+    const cellHeight = height / rows;
+    for (let index = 0; index < list.length; index += 1) {
+      const item = list[index];
+      const spine = await stage.loadSpine(item.file);
+      if (item.config.skin) SpineStage.setSkin(spine, item.config.skin);
+      SpineStage.playAnimation(spine, item.animation, false);
+      SpineStage.seek(spine, item.config.start);
+      const bounds = spine.getLocalBounds();
+      const scale = Math.min(
+        (cellWidth * 0.72) / Math.max(1, bounds.width),
+        (cellHeight * 0.72) / Math.max(1, bounds.height),
+      );
+      spine.scale.set(clamp(scale, 0.03, 8));
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      stage.centerSpineAt(
+        spine,
+        column * cellWidth + cellWidth / 2,
+        row * cellHeight + cellHeight / 2,
+      );
+      loaded.push({ item, spine });
+    }
+    const duration = Math.max(
+      ...list.map((item) =>
+        Math.max(0.05, item.config.end - item.config.start),
+      ),
+    );
+    const frameCount = Math.max(2, Math.round(duration * FPS));
+    const gif = GIFEncoder();
+    const bakeChecker =
+      state.bakeChecker || list.some((item) => item.file.usesAdditiveBlend);
+    for (let frame = 0; frame < frameCount; frame += 1) {
+      const elapsed = frame / FPS;
+      loaded.forEach(({ item, spine }) => {
+        const length = Math.max(0.01, item.config.end - item.config.start);
+        SpineStage.seek(spine, item.config.start + (elapsed % length));
+      });
+      stage.renderOnce();
+      const frameCanvas = stage.extractCanvasRegion(0, 0, width, height);
+      const pixels = normalizeGifAlpha(
+        framePixelsForExport(frameCanvas, bakeChecker, width, height),
+      );
+      const palette = quantize(pixels, 256, {
+        format: "rgba4444",
+        oneBitAlpha: true,
+        clearAlpha: true,
+        clearAlphaThreshold: 0,
+        clearAlphaColor: 0,
+      });
+      const bitmap = applyPalette(pixels, palette, "rgba4444");
+      const transparentIndex = palette.findIndex((color) => color[3] === 0);
+      gif.writeFrame(bitmap, width, height, {
+        palette,
+        delay: 1000 / FPS,
+        repeat: 0,
+        transparent: transparentIndex >= 0,
+        transparentIndex: Math.max(0, transparentIndex),
+        dispose: 2,
+      });
+      state.progress = (frame + 1) / frameCount;
+      state.status = `Rendering group · ${frame + 1}/${frameCount}`;
+      updateProgress();
+      await new Promise(requestAnimationFrame);
+    }
+    gif.finish();
+    const bytes = gif.bytes();
+    let binary = "";
+    for (let index = 0; index < bytes.length; index += 32768) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + 32768));
+    }
+    return { fileName: "anim_group.gif", dataBase64: btoa(binary) };
+  } finally {
+    stage.destroy();
+    host.remove();
+  }
+}
 function updateProgress() {
   const fill = document.querySelector("footer aside em"),
     label = document.querySelector(".progress span"),
@@ -376,8 +535,12 @@ async function exportAll() {
   render();
   try {
     const files = [];
-    for (let i = 0; i < list.length; i++)
-      files.push(await encode(list[i], i, list.length));
+    if (state.combineSymbols) {
+      files.push(await encodeCombined(list));
+    } else {
+      for (let i = 0; i < list.length; i++)
+        files.push(await encode(list[i], i, list.length));
+    }
     const r = await window.spinePreview.saveBatchGifs({
       outputDir: state.output.trim(),
       files,
@@ -440,6 +603,17 @@ app.addEventListener("input", (e) => {
 app.addEventListener("change", (e) => {
   const t = e.target,
     row = t.closest(".anim");
+  if (t.dataset.role === "bake-checker") {
+    state.bakeChecker = t.checked;
+    localStorage.setItem("gif-bake-checker", String(t.checked));
+    return;
+  }
+  if (t.dataset.role === "combine-symbols") {
+    state.combineSymbols = t.checked;
+    localStorage.setItem("gif-combine-symbols", String(t.checked));
+    render();
+    return;
+  }
   if (!row) return;
   const x = findItem(row.dataset.key);
   if (t.dataset.role === "select") {

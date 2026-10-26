@@ -1,27 +1,35 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell } from 'electron';
-import fs from 'node:fs';
-import path from 'node:path';
-import started from 'electron-squirrel-startup';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  protocol,
+  screen,
+  shell,
+} from "electron";
+import fs from "node:fs";
+import path from "node:path";
+import started from "electron-squirrel-startup";
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
   app.quit();
 }
 
-const SPINE_ASSET_SCHEME = 'spine-asset';
+const SPINE_ASSET_SCHEME = "spine-asset";
 
 function contentTypeFor(filePath) {
   const ext = path.extname(filePath).toLowerCase();
-  if (ext === '.json') return 'application/json; charset=utf-8';
-  if (ext === '.atlas' || ext === '.txt') return 'text/plain; charset=utf-8';
-  if (ext === '.png') return 'image/png';
-  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
-  if (ext === '.webp') return 'image/webp';
-  if (ext === '.mp3') return 'audio/mpeg';
-  if (ext === '.wav') return 'audio/wav';
-  if (ext === '.ogg') return 'audio/ogg';
-  if (ext === '.m4a') return 'audio/mp4';
-  return 'application/octet-stream';
+  if (ext === ".json") return "application/json; charset=utf-8";
+  if (ext === ".atlas" || ext === ".txt") return "text/plain; charset=utf-8";
+  if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".mp3") return "audio/mpeg";
+  if (ext === ".wav") return "audio/wav";
+  if (ext === ".ogg") return "audio/ogg";
+  if (ext === ".m4a") return "audio/mp4";
+  return "application/octet-stream";
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -40,23 +48,24 @@ protocol.registerSchemesAsPrivileged([
 
 const createWindow = () => {
   const primaryDisplay = screen.getPrimaryDisplay();
-  const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
+  const { width: screenWidth, height: screenHeight } =
+    primaryDisplay.workAreaSize;
   const mainWindow = new BrowserWindow({
     width: screenWidth,
     height: screenHeight,
     minWidth: 900,
     minHeight: 680,
     center: true,
-    backgroundColor: '#0e141a',
+    backgroundColor: "#0e141a",
     show: false,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
-  mainWindow.once('ready-to-show', () => {
+  mainWindow.once("ready-to-show", () => {
     mainWindow.maximize();
     mainWindow.show();
   });
@@ -64,7 +73,9 @@ const createWindow = () => {
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
   } else {
-    mainWindow.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
+    mainWindow.loadFile(
+      path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
+    );
   }
 };
 
@@ -76,7 +87,7 @@ function walkJsonFiles(dir) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...walkJsonFiles(fullPath));
-    } else if (entry.isFile() && entry.name.endsWith('.json')) {
+    } else if (entry.isFile() && entry.name.endsWith(".json")) {
       files.push(fullPath);
     }
   }
@@ -92,7 +103,7 @@ function walkAtlasFiles(dir) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...walkAtlasFiles(fullPath));
-    } else if (entry.isFile() && entry.name.endsWith('.atlas')) {
+    } else if (entry.isFile() && entry.name.endsWith(".atlas")) {
       files.push(fullPath);
     }
   }
@@ -121,8 +132,10 @@ function readAtlasPngs(atlasPath) {
     return [];
   }
 
-  const lines = fs.readFileSync(atlasPath, 'utf8').split(/\r?\n/);
-  return lines.filter((line) => line.trim().endsWith('.png')).map((line) => line.trim());
+  const lines = fs.readFileSync(atlasPath, "utf8").split(/\r?\n/);
+  return lines
+    .filter((line) => line.trim().endsWith(".png"))
+    .map((line) => line.trim());
 }
 
 function resolveAtlasTexturePaths(atlasPath) {
@@ -132,17 +145,20 @@ function resolveAtlasTexturePaths(atlasPath) {
 
 function atlasTexturesExist(atlasPath) {
   const texturePaths = resolveAtlasTexturePaths(atlasPath);
-  return texturePaths.length > 0 && texturePaths.every((texturePath) => fs.existsSync(texturePath));
+  return (
+    texturePaths.length > 0 &&
+    texturePaths.every((texturePath) => fs.existsSync(texturePath))
+  );
 }
 
 function readSkinNames(rawSkins) {
   if (Array.isArray(rawSkins)) {
     return rawSkins
-      .map((skin) => (skin && typeof skin === 'object' ? skin.name : ''))
+      .map((skin) => (skin && typeof skin === "object" ? skin.name : ""))
       .filter(Boolean);
   }
 
-  if (rawSkins && typeof rawSkins === 'object') {
+  if (rawSkins && typeof rawSkins === "object") {
     return Object.keys(rawSkins);
   }
 
@@ -156,7 +172,7 @@ function animationDuration(animation) {
       value.forEach(visit);
       return;
     }
-    if (!value || typeof value !== 'object') return;
+    if (!value || typeof value !== "object") return;
     if (Number.isFinite(value.time)) maxTime = Math.max(maxTime, value.time);
     Object.values(value).forEach(visit);
   };
@@ -171,23 +187,30 @@ function normalizeBaseName(filePath) {
 function resolveAtlasPath(jsonPath, atlasCandidatesByDir) {
   const dir = path.dirname(jsonPath);
   const jsonBase = normalizeBaseName(jsonPath);
-  const directAtlasPath = path.join(dir, `${path.basename(jsonPath, '.json')}.atlas`);
+  const directAtlasPath = path.join(
+    dir,
+    `${path.basename(jsonPath, ".json")}.atlas`,
+  );
 
   if (fs.existsSync(directAtlasPath)) {
-    return atlasTexturesExist(directAtlasPath) ? directAtlasPath : '';
+    return atlasTexturesExist(directAtlasPath) ? directAtlasPath : "";
   }
 
   const candidates = atlasCandidatesByDir.get(dir) ?? [];
   if (candidates.length === 0) {
-    return '';
+    return "";
   }
 
-  const validCandidates = candidates.filter((atlasPath) => atlasTexturesExist(atlasPath));
+  const validCandidates = candidates.filter((atlasPath) =>
+    atlasTexturesExist(atlasPath),
+  );
   if (validCandidates.length === 0) {
-    return '';
+    return "";
   }
 
-  const exactCandidate = validCandidates.find((atlasPath) => normalizeBaseName(atlasPath) === jsonBase);
+  const exactCandidate = validCandidates.find(
+    (atlasPath) => normalizeBaseName(atlasPath) === jsonBase,
+  );
   if (exactCandidate) {
     return exactCandidate;
   }
@@ -204,7 +227,7 @@ function resolveAtlasPath(jsonPath, atlasCandidatesByDir) {
     return validCandidates[0];
   }
 
-  return '';
+  return "";
 }
 
 function scanSpineFolder(sourceDir) {
@@ -223,7 +246,7 @@ function scanSpineFolder(sourceDir) {
   for (const filePath of jsonFiles) {
     let parsed;
     try {
-      parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
     } catch {
       continue;
     }
@@ -240,13 +263,18 @@ function scanSpineFolder(sourceDir) {
 
     const slots = Array.isArray(parsed.slots) ? parsed.slots : [];
     const slotsWithAttachment = slots.filter((slot) => slot?.attachment).length;
+    const usesAdditiveBlend = slots.some((slot) => slot?.blend === "additive");
     const pngNames = readAtlasPngs(atlasPath);
     const pngPaths = resolveAtlasTexturePaths(atlasPath);
     const atlasPages = Math.max(pngNames.length, 1);
-    const estDrawcall = Math.max(atlasPages, Math.ceil(slotsWithAttachment / 8));
-    const animations = parsed.animations && typeof parsed.animations === 'object'
-      ? Object.keys(parsed.animations)
-      : [];
+    const estDrawcall = Math.max(
+      atlasPages,
+      Math.ceil(slotsWithAttachment / 8),
+    );
+    const animations =
+      parsed.animations && typeof parsed.animations === "object"
+        ? Object.keys(parsed.animations)
+        : [];
     const animationDetails = animations.map((name) => ({
       name,
       duration: animationDuration(parsed.animations[name]),
@@ -260,8 +288,12 @@ function scanSpineFolder(sourceDir) {
       jsonPath: filePath,
       atlasPath,
       pngPaths,
-      version: typeof parsed.skeleton?.spine === 'string' ? parsed.skeleton.spine : 'unknown',
+      version:
+        typeof parsed.skeleton?.spine === "string"
+          ? parsed.skeleton.spine
+          : "unknown",
       slots: slotsWithAttachment,
+      usesAdditiveBlend,
       atlasPages,
       estDrawcall,
       animations,
@@ -284,7 +316,9 @@ function scanSoundFolder(sourceDir) {
 }
 
 function ensureInsideOutputDir(outputDir, relativeOutputPath) {
-  const normalized = path.normalize(relativeOutputPath).replace(/^(\.\.(\/|\\|$))+/, '');
+  const normalized = path
+    .normalize(relativeOutputPath)
+    .replace(/^(\.\.(\/|\\|$))+/, "");
   return path.join(outputDir, normalized);
 }
 
@@ -305,23 +339,25 @@ ${regionName}
 `;
 }
 
-function buildExportJson({ baseName, width, height, pivotX, pivotY, spineVersion }) {
+function buildExportJson({
+  baseName,
+  width,
+  height,
+  pivotX,
+  pivotY,
+  spineVersion,
+}) {
   const centerX = width / 2 - pivotX;
   const centerY = pivotY - height / 2;
   return JSON.stringify({
     skeleton: {
-      spine: spineVersion || '3.7.94',
+      spine: spineVersion || "3.7.94",
       width,
       height,
-      images: './',
+      images: "./",
     },
-    bones: [
-      { name: 'root' },
-      { name: 'holder', parent: 'root' },
-    ],
-    slots: [
-      { name: 'image', bone: 'holder', attachment: baseName },
-    ],
+    bones: [{ name: "root" }, { name: "holder", parent: "root" }],
+    slots: [{ name: "image", bone: "holder", attachment: baseName }],
     skins: {
       default: {
         image: {
@@ -348,9 +384,18 @@ async function saveBatchSpineExportFiles(outputDir, files) {
       continue;
     }
 
-    const pngPath = ensureInsideOutputDir(outputDir, `${file.relativeBasePath}.png`);
-    const atlasPath = ensureInsideOutputDir(outputDir, `${file.relativeBasePath}.atlas`);
-    const jsonPath = ensureInsideOutputDir(outputDir, `${file.relativeBasePath}.json`);
+    const pngPath = ensureInsideOutputDir(
+      outputDir,
+      `${file.relativeBasePath}.png`,
+    );
+    const atlasPath = ensureInsideOutputDir(
+      outputDir,
+      `${file.relativeBasePath}.atlas`,
+    );
+    const jsonPath = ensureInsideOutputDir(
+      outputDir,
+      `${file.relativeBasePath}.json`,
+    );
     const targetDir = path.dirname(pngPath);
     const textureFileName = path.basename(pngPath);
     const regionName = path.basename(file.relativeBasePath);
@@ -358,13 +403,16 @@ async function saveBatchSpineExportFiles(outputDir, files) {
     const height = Math.max(1, Math.round(Number(file.height) || 0));
     const pivotX = Number(file.pivotX) || 0;
     const pivotY = Number(file.pivotY) || 0;
-    const base64 = String(file.pngDataUrl).replace(/^data:image\/png;base64,/, '');
+    const base64 = String(file.pngDataUrl).replace(
+      /^data:image\/png;base64,/,
+      "",
+    );
     await fs.promises.mkdir(targetDir, { recursive: true });
-    await fs.promises.writeFile(pngPath, Buffer.from(base64, 'base64'));
+    await fs.promises.writeFile(pngPath, Buffer.from(base64, "base64"));
     await fs.promises.writeFile(
       atlasPath,
       buildExportAtlas(textureFileName, width, height, regionName),
-      'utf8',
+      "utf8",
     );
     await fs.promises.writeFile(
       jsonPath,
@@ -376,7 +424,7 @@ async function saveBatchSpineExportFiles(outputDir, files) {
         pivotY,
         spineVersion: file.spineVersion,
       }),
-      'utf8',
+      "utf8",
     );
     writtenFiles.push(jsonPath);
   }
@@ -395,7 +443,10 @@ async function writeFileReplacing(filePath, buffer) {
       await fs.promises.writeFile(filePath, buffer);
       return;
     } catch (error) {
-      const isLocked = error.code === 'EBUSY' || error.code === 'EPERM' || error.code === 'EACCES';
+      const isLocked =
+        error.code === "EBUSY" ||
+        error.code === "EPERM" ||
+        error.code === "EACCES";
       if (!isLocked || attempt === attempts) {
         throw error;
       }
@@ -416,8 +467,11 @@ async function saveBatchSpriteFramePngs(outputDir, files) {
     // regardless of what the (user-editable) custom name contains.
     const safeName = path.basename(file.fileName);
     const pngPath = path.join(outputDir, safeName);
-    const base64 = String(file.pngDataUrl).replace(/^data:image\/png;base64,/, '');
-    await writeFileReplacing(pngPath, Buffer.from(base64, 'base64'));
+    const base64 = String(file.pngDataUrl).replace(
+      /^data:image\/png;base64,/,
+      "",
+    );
+    await writeFileReplacing(pngPath, Buffer.from(base64, "base64"));
     writtenFiles.push(pngPath);
   }
 
@@ -428,92 +482,101 @@ async function saveBatchGifs(outputDir, files) {
   const writtenFiles = [];
   for (const file of files) {
     if (!file?.fileName || !file?.dataBase64) continue;
-    const safeName = path.basename(file.fileName).replace(/[^A-Za-z0-9._-]+/g, '_');
-    const gifPath = path.join(outputDir, safeName.toLowerCase().endsWith('.gif') ? safeName : `${safeName}.gif`);
-    await writeFileReplacing(gifPath, Buffer.from(file.dataBase64, 'base64'));
+    const safeName = path
+      .basename(file.fileName)
+      .replace(/[^A-Za-z0-9._-]+/g, "_");
+    const gifPath = path.join(
+      outputDir,
+      safeName.toLowerCase().endsWith(".gif") ? safeName : `${safeName}.gif`,
+    );
+    await writeFileReplacing(gifPath, Buffer.from(file.dataBase64, "base64"));
     writtenFiles.push(gifPath);
   }
   return writtenFiles;
 }
 
 function registerIpcHandlers() {
-  ipcMain.handle('select-folder', async () => {
+  ipcMain.handle("select-folder", async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
-      properties: ['openDirectory'],
-      title: 'Select Spine Animation Folder',
+      properties: ["openDirectory"],
+      title: "Select Spine Animation Folder",
     });
 
     if (canceled || !filePaths.length) {
-      return '';
+      return "";
     }
 
     return filePaths[0];
   });
 
-  ipcMain.handle('select-sound-folder', async () => {
+  ipcMain.handle("select-sound-folder", async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
-      properties: ['openDirectory'],
-      title: 'Select Sound Folder',
+      properties: ["openDirectory"],
+      title: "Select Sound Folder",
     });
 
     if (canceled || !filePaths.length) {
-      return '';
+      return "";
     }
 
     return filePaths[0];
   });
 
-  ipcMain.handle('select-export-folder', async () => {
+  ipcMain.handle("select-export-folder", async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
-      properties: ['openDirectory', 'createDirectory'],
-      title: 'Select PNG Export Folder',
+      properties: ["openDirectory", "createDirectory"],
+      title: "Select PNG Export Folder",
     });
 
     if (canceled || !filePaths.length) {
-      return '';
+      return "";
     }
 
     return filePaths[0];
   });
 
-  ipcMain.handle('scan-spine-folder', async (_event, sourceDir) => {
+  ipcMain.handle("scan-spine-folder", async (_event, sourceDir) => {
     try {
       if (!sourceDir || !fs.existsSync(sourceDir)) {
         return {
           files: [],
-          error: 'Folder không tồn tại hoặc không thể truy cập.',
+          error: "Folder không tồn tại hoặc không thể truy cập.",
         };
       }
 
       return {
         files: scanSpineFolder(sourceDir),
-        error: '',
+        error: "",
       };
     } catch (error) {
       return {
         files: [],
-        error: error instanceof Error ? error.message : 'Không thể scan folder.',
+        error:
+          error instanceof Error ? error.message : "Không thể scan folder.",
       };
     }
   });
 
-  ipcMain.handle('scan-sound-folder', async (_event, sourceDir) => {
+  ipcMain.handle("scan-sound-folder", async (_event, sourceDir) => {
     try {
       if (!sourceDir || !fs.existsSync(sourceDir)) {
         return {
           files: [],
-          error: 'Folder sound không tồn tại hoặc không thể truy cập.',
+          error: "Folder sound không tồn tại hoặc không thể truy cập.",
         };
       }
 
       return {
         files: scanSoundFolder(sourceDir),
-        error: '',
+        error: "",
       };
     } catch (error) {
       return {
         files: [],
-        error: error instanceof Error ? error.message : 'Không thể scan folder sound.',
+        error:
+          error instanceof Error
+            ? error.message
+            : "Không thể scan folder sound.",
       };
     }
   });
@@ -526,7 +589,7 @@ function registerIpcHandlers() {
         return {
           ok: false,
           writtenFiles: [],
-          error: 'Folder export không tồn tại hoặc không thể truy cập.',
+          error: "Folder export không tồn tại hoặc không thể truy cập.",
         };
       }
 
@@ -534,21 +597,22 @@ function registerIpcHandlers() {
       return {
         ok: true,
         writtenFiles,
-        error: '',
+        error: "",
       };
     } catch (error) {
       return {
         ok: false,
         writtenFiles: [],
-        error: error instanceof Error ? error.message : 'Không thể lưu PNG export.',
+        error:
+          error instanceof Error ? error.message : "Không thể lưu PNG export.",
       };
     }
   };
 
-  ipcMain.handle('save-batch-spine-export', handleSaveBatchSpineExport);
-  ipcMain.handle('save-batch-png', handleSaveBatchSpineExport);
+  ipcMain.handle("save-batch-spine-export", handleSaveBatchSpineExport);
+  ipcMain.handle("save-batch-png", handleSaveBatchSpineExport);
 
-  ipcMain.handle('save-batch-sprite-frames', async (_event, payload) => {
+  ipcMain.handle("save-batch-sprite-frames", async (_event, payload) => {
     try {
       const outputDir = payload?.outputDir;
       const files = Array.isArray(payload?.files) ? payload.files : [];
@@ -556,7 +620,7 @@ function registerIpcHandlers() {
         return {
           ok: false,
           writtenFiles: [],
-          error: 'Folder export không tồn tại hoặc không thể truy cập.',
+          error: "Folder export không tồn tại hoặc không thể truy cập.",
         };
       }
 
@@ -564,34 +628,45 @@ function registerIpcHandlers() {
       return {
         ok: true,
         writtenFiles,
-        error: '',
+        error: "",
       };
     } catch (error) {
       return {
         ok: false,
         writtenFiles: [],
-        error: error instanceof Error ? error.message : 'Không thể lưu sprite frame PNG.',
+        error:
+          error instanceof Error
+            ? error.message
+            : "Không thể lưu sprite frame PNG.",
       };
     }
   });
 
-  ipcMain.handle('save-batch-gifs', async (_event, payload) => {
+  ipcMain.handle("save-batch-gifs", async (_event, payload) => {
     try {
       const outputDir = payload?.outputDir;
       const files = Array.isArray(payload?.files) ? payload.files : [];
       if (!outputDir || !fs.existsSync(outputDir)) {
-        return { ok: false, writtenFiles: [], error: 'Folder export không tồn tại hoặc không thể truy cập.' };
+        return {
+          ok: false,
+          writtenFiles: [],
+          error: "Folder export không tồn tại hoặc không thể truy cập.",
+        };
       }
       const writtenFiles = await saveBatchGifs(outputDir, files);
-      return { ok: true, writtenFiles, error: '' };
+      return { ok: true, writtenFiles, error: "" };
     } catch (error) {
-      return { ok: false, writtenFiles: [], error: error instanceof Error ? error.message : 'Không thể lưu GIF.' };
+      return {
+        ok: false,
+        writtenFiles: [],
+        error: error instanceof Error ? error.message : "Không thể lưu GIF.",
+      };
     }
   });
 
-  ipcMain.handle('open-folder', async (_event, folderPath) => {
+  ipcMain.handle("open-folder", async (_event, folderPath) => {
     if (!folderPath || !fs.existsSync(folderPath)) {
-      return { ok: false, error: 'Folder không tồn tại.' };
+      return { ok: false, error: "Folder không tồn tại." };
     }
 
     const error = await shell.openPath(folderPath);
@@ -601,7 +676,7 @@ function registerIpcHandlers() {
 
 function installSpineAssetProtocol() {
   protocol.handle(SPINE_ASSET_SCHEME, async (request) => {
-    const corsHeaders = { 'Access-Control-Allow-Origin': '*' };
+    const corsHeaders = { "Access-Control-Allow-Origin": "*" };
     try {
       const url = new URL(request.url);
       let filePath = decodeURIComponent(url.pathname);
@@ -615,20 +690,21 @@ function installSpineAssetProtocol() {
       const bytes = await fs.promises.readFile(filePath);
       const headers = {
         ...corsHeaders,
-        'Content-Type': contentTypeFor(filePath),
-        'Cache-Control': 'no-cache',
+        "Content-Type": contentTypeFor(filePath),
+        "Cache-Control": "no-cache",
       };
       return new Response(new Uint8Array(bytes), {
         status: 200,
         headers,
       });
     } catch (error) {
-      return new Response('Not found', {
+      return new Response("Not found", {
         status: 404,
         headers: {
           ...corsHeaders,
-          'Content-Type': 'text/plain; charset=utf-8',
-          'X-Spine-Asset-Error': error instanceof Error ? error.message : 'Unknown error',
+          "Content-Type": "text/plain; charset=utf-8",
+          "X-Spine-Asset-Error":
+            error instanceof Error ? error.message : "Unknown error",
         },
       });
     }
@@ -640,15 +716,15 @@ app.whenReady().then(() => {
   installSpineAssetProtocol();
   createWindow();
 
-  app.on('activate', () => {
+  app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
   });
 });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
     app.quit();
   }
 });

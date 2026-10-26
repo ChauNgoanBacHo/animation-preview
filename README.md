@@ -10,7 +10,9 @@ Desktop tool dành cho team animation tạo GIF minh hoạ trong doc closure. Ap
 4. Tick những animation cần xuất. Checkbox là nguồn duy nhất quyết định animation nào được đưa vào batch export.
 5. Chọn `GIF output` và bấm `Export GIF` để chạy batch một lần.
 
-GIF mặc định được xuất ở 512×512, 20 FPS, loop vô hạn, nền transparent, dùng skin đã chọn và có tên dạng `SpineName_AnimationName.gif`. Preview dùng nền ô caro để dễ nhận biết vùng trong suốt; nền caro không được bake vào GIF.
+Bật `Gộp Anim` để ghép toàn bộ animation đã tick vào một GIF 960×540. Tool tự xếp tối đa 5 animation mỗi hàng; mỗi animation dùng skin/timeframe riêng và tự loop nếu ngắn hơn thời lượng group.
+
+GIF mặc định được xuất ở 512×512, 20 FPS, loop vô hạn, dùng skin đã chọn và có tên dạng `SpineName_AnimationName.gif`. Option `Bake nền caro` được bật mặc định để đưa nền caro vào file GIF; tắt option này nếu cần GIF transparent.
 
 ## Setup
 
