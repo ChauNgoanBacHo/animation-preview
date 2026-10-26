@@ -8,7 +8,7 @@ const FRAME_STEP = 1 / 60;
 const LOADING_SCREEN_MAX_DURATION_MS = 2000;
 const READY_FADE_DURATION_MS = 320;
 const SOUND_FEATURE_ENABLED = false;
-const EXPORT_FEATURE_ENABLED = true;
+const EXPORT_FEATURE_ENABLED = false;
 const EXPORT_PADDING_PX = 8;
 const ANIMATION_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -50,7 +50,7 @@ const state = {
   currentIndex: -1,
   theme: 'dark',
   background: 'scene',
-  uiMode: 'landing',
+  uiMode: 'preview',
   uiTransition: false,
   loading: true,
   readyAnimating: false,
@@ -233,12 +233,7 @@ function updateValidationWarnings(warnings = []) {
 
 function setUiMode(mode) {
   const previousMode = state.uiMode;
-  let nextMode = 'landing';
-  if (mode === 'export') {
-    nextMode = 'export';
-  } else if (mode === 'preview') {
-    nextMode = 'preview';
-  }
+  const nextMode = 'preview';
   state.uiMode = nextMode;
   if (state.uiMode === 'export') {
     state.preview.animationListOpen = false;
@@ -2761,7 +2756,7 @@ function bindEvents() {
 
     if (action === 'select-folder') {
       await handleSelectFolder();
-    } else if (action === 'open-export-workspace') {
+    } else if (EXPORT_FEATURE_ENABLED && action === 'open-export-workspace') {
       syncDefaultExportOutputDir();
       setUiMode('export');
       schedulePreviewResize();
@@ -4083,33 +4078,6 @@ function landingPageMarkup() {
           <span>Live Layout</span>
         </div>
       </button>
-      <button
-        type="button"
-        class="mode-landing-card mode-landing-card-export"
-        data-action="open-export-workspace"
-      >
-        <span class="mode-landing-index" aria-hidden="true">02</span>
-        <div class="mode-landing-feature-icon mode-landing-feature-icon-export" aria-hidden="true">
-          <span class="mode-landing-feature-sheet"></span>
-          <span class="mode-landing-feature-sheet mode-landing-feature-sheet-mid"></span>
-          <span class="mode-landing-feature-sheet mode-landing-feature-sheet-top"></span>
-          <span class="mode-landing-feature-crosshair-h"></span>
-          <span class="mode-landing-feature-crosshair-v"></span>
-          <span class="mode-landing-feature-anchor"></span>
-        </div>
-        <div class="mode-landing-status" aria-hidden="true">
-          <span>Ready</span>
-          <span>Export Control Room</span>
-        </div>
-        <span class="mode-landing-kicker">Workspace 02</span>
-        <strong>Export PNG</strong>
-        <p>So sánh anchor giữa nhiều spine, register frame cần thiết và review PNG chồng lớp để phát hiện sprite còn lệch hay đã khớp.</p>
-        <div class="mode-landing-meta" aria-hidden="true">
-          <span>Anchor Check</span>
-          <span>PNG Review</span>
-          <span>Frame Export</span>
-        </div>
-      </button>
     </section>
   `;
 }
@@ -4356,18 +4324,6 @@ function render() {
               <div class="spine-chip-list">
                 ${spineButtons}
               </div>
-              ${state.uiMode !== 'landing'
-                ? `
-                  <div class="hero-mode-actions">
-                    <button
-                      class="secondary-btn export-entry-btn hero-mode-btn"
-                      data-action="${state.uiMode === 'export' ? 'back-to-preview' : 'open-export-workspace'}"
-                    >
-                      ${state.uiMode === 'export' ? 'Preview Anim' : 'Export PNG'}
-                    </button>
-                  </div>
-                `
-                : ''}
             `
             : ''}
 
@@ -4375,15 +4331,9 @@ function render() {
         </section>
         `}
 
-        <section class="mode-page-shell mode-page-${state.uiMode} ${state.uiTransition ? 'is-entering' : ''}">
-          ${state.uiMode === 'landing'
-            ? landingPageMarkup()
-            : (state.uiMode === 'preview' ? previewPanelMarkup() : exportPageMarkup())}
+        <section class="mode-page-shell mode-page-preview ${state.uiTransition ? 'is-entering' : ''}">
+          ${previewPanelMarkup()}
         </section>
-
-        <footer class="app-footer ${state.uiTransition ? 'is-entering' : ''}">
-          <p>POWERED BY TITI X BESDEN</p>
-        </footer>
       </main>
 
       ${previewContextMenuMarkup()}
