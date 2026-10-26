@@ -1,8 +1,8 @@
 {
   "name": "animation-preview-app",
-  "productName": "Animation Preview",
+  "productName": "Spine GIF Exporter",
   "version": "1.0.0",
-  "description": "Desktop app for previewing Spine animation folders",
+  "description": "Desktop tool for batch-exporting trimmed Spine animations to GIF for doc closure",
   "main": ".vite/build/main.js",
   "private": true,
   "scripts": {
@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "electron-squirrel-startup": "^1.0.1",
+    "gifenc": "^1.0.3",
     "pixi-spine": "^4.0.6",
     "pixi.js": "^7.4.3"
   }

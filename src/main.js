@@ -149,6 +149,21 @@ function readSkinNames(rawSkins) {
   return [];
 }
 
+function animationDuration(animation) {
+  let maxTime = 0;
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    if (Number.isFinite(value.time)) maxTime = Math.max(maxTime, value.time);
+    Object.values(value).forEach(visit);
+  };
+  visit(animation);
+  return maxTime;
+}
+
 function normalizeBaseName(filePath) {
   return path.basename(filePath, path.extname(filePath)).toLowerCase();
 }
@@ -232,6 +247,10 @@ function scanSpineFolder(sourceDir) {
     const animations = parsed.animations && typeof parsed.animations === 'object'
       ? Object.keys(parsed.animations)
       : [];
+    const animationDetails = animations.map((name) => ({
+      name,
+      duration: animationDuration(parsed.animations[name]),
+    }));
     const skins = readSkinNames(parsed.skins);
 
     results.push({
@@ -246,6 +265,7 @@ function scanSpineFolder(sourceDir) {
       atlasPages,
       estDrawcall,
       animations,
+      animationDetails,
       skins,
     });
   }
@@ -404,6 +424,18 @@ async function saveBatchSpriteFramePngs(outputDir, files) {
   return writtenFiles;
 }
 
+async function saveBatchGifs(outputDir, files) {
+  const writtenFiles = [];
+  for (const file of files) {
+    if (!file?.fileName || !file?.dataBase64) continue;
+    const safeName = path.basename(file.fileName).replace(/[^A-Za-z0-9._-]+/g, '_');
+    const gifPath = path.join(outputDir, safeName.toLowerCase().endsWith('.gif') ? safeName : `${safeName}.gif`);
+    await writeFileReplacing(gifPath, Buffer.from(file.dataBase64, 'base64'));
+    writtenFiles.push(gifPath);
+  }
+  return writtenFiles;
+}
+
 function registerIpcHandlers() {
   ipcMain.handle('select-folder', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
@@ -540,6 +572,20 @@ function registerIpcHandlers() {
         writtenFiles: [],
         error: error instanceof Error ? error.message : 'Không thể lưu sprite frame PNG.',
       };
+    }
+  });
+
+  ipcMain.handle('save-batch-gifs', async (_event, payload) => {
+    try {
+      const outputDir = payload?.outputDir;
+      const files = Array.isArray(payload?.files) ? payload.files : [];
+      if (!outputDir || !fs.existsSync(outputDir)) {
+        return { ok: false, writtenFiles: [], error: 'Folder export không tồn tại hoặc không thể truy cập.' };
+      }
+      const writtenFiles = await saveBatchGifs(outputDir, files);
+      return { ok: true, writtenFiles, error: '' };
+    } catch (error) {
+      return { ok: false, writtenFiles: [], error: error instanceof Error ? error.message : 'Không thể lưu GIF.' };
     }
   });
 
