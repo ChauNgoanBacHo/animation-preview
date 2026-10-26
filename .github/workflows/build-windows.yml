@@ -5,7 +5,7 @@ on:
     tags:
       - 'v*'
     branches:
-      - feat/besden
+      - export-gif
   workflow_dispatch: {}
 
 permissions:
@@ -28,7 +28,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: animation-preview-windows
+          name: spine-gif-expoter-windows
           path: |
             out/make/**/*.exe
           if-no-files-found: error

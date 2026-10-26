@@ -15,8 +15,8 @@ module.exports = {
     {
       name: '@electron-forge/maker-squirrel',
       config: {
-        name: 'animation_preview',
-        setupExe: 'AnimationPreviewSetup.exe',
+        name: 'spine_gif_expoter',
+        setupExe: 'SpineGIFExpoterSetup.exe',
         setupIcon: 'assets/icon.ico',
       },
       platforms: ['win32'],

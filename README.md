@@ -1,4 +1,4 @@
-# Spine GIF Exporter
+# Spine GIF Expoter
 
 Desktop tool dành cho team animation tạo GIF minh hoạ trong doc closure. App quét toàn bộ Spine trong một folder, gom animation theo từng asset và export các đoạn trim thành GIF trong một lượt.
 

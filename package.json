@@ -1,6 +1,6 @@
 {
   "name": "animation-preview-app",
-  "productName": "Spine GIF Exporter",
+  "productName": "Spine GIF Expoter",
   "version": "1.0.0",
   "description": "Desktop tool for batch-exporting trimmed Spine animations to GIF for doc closure",
   "main": ".vite/build/main.js",

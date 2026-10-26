@@ -121,7 +121,7 @@ function framePixelsForExport(
 function render() {
   const count = selected().length,
     total = state.files.reduce((n, f) => n + f.animations.length, 0);
-  app.innerHTML = `<main><header><div class="brand"><b>S</b><div><h1>Spine GIF Exporter</h1><p>Doc closure batch tool</p></div></div><div class="stats"><span><strong>${state.files.length}</strong> Spine</span><span><strong>${total}</strong> anim</span><span><strong>${count}</strong> selected</span></div></header>
+  app.innerHTML = `<main><header><div class="brand"><b>S</b><div><h1>Spine GIF Expoter</h1><p>Doc closure batch tool</p></div></div><div class="stats"><span><strong>${state.files.length}</strong> Spine</span><span><strong>${total}</strong> anim</span><span><strong>${count}</strong> selected</span></div></header>
   <section class="toolbar"><label><span>Source folder</span><div><input data-source value="${esc(state.source)}" placeholder="Folder chứa Spine..."><button data-do="source">${icon("folder")}</button></div></label><button class="scan" data-do="scan" ${state.scanning ? "disabled" : ""}>${state.scanning ? "Scanning…" : "Scan Spine"}</button><i></i><label><span>GIF output</span><div><input data-output value="${esc(state.output)}" placeholder="Folder lưu GIF..."><button data-do="output">${icon("folder")}</button></div></label></section>
   ${state.error ? `<div class="notice error">${esc(state.error)}</div>` : ""}${state.status ? `<div class="notice ok">${esc(state.status)}</div>` : ""}
   <section class="workspace"><div class="headrow"><span>Spine asset</span><span>Animations · chọn skin và animation để export</span></div><div class="groups">${state.files.length ? state.files.map(groupView).join("") : emptyView()}</div></section>
