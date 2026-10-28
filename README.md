@@ -18,6 +18,8 @@ GIF được render trong vùng tối đa 512×512 rồi tự crop theo nội du
 
 `Object size` điều chỉnh độ lớn nhân vật khi render. Tool tự quét pixel alpha trên toàn bộ timeframe và crop transparent padding theo giá trị `Padding`, giúp file GIF gọn và nhẹ hơn. Khi bật `Gộp Anim`, dùng `Object / row` để chọn số animation trên mỗi hàng của group GIF.
 
+Mốc `Object size 100%` dùng safe render 96% ở bên trong để tránh symbol hoặc VFX chạm và bị cắt tại mép canvas.
+
 Mỗi GIF được tự tối ưu xuống tối đa 0.5 MB. Nếu lần encode đầu vượt giới hạn, tool tự encode lại theo nhiều mức, ưu tiên giữ chất lượng rồi mới giảm palette màu, FPS và resolution.
 
 ## Setup

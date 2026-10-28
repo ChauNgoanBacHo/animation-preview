@@ -45,6 +45,7 @@ const esc = (v) =>
     .replaceAll('"', "&quot;");
 const keyOf = (f, a) => `${f.id}::${a}`;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const renderObjectSize = () => (state.objectSize === 100 ? 96 : state.objectSize);
 const fmt = (v) => `${Number(v || 0).toFixed(2)}s`;
 const durationOf = (f, a) =>
   Math.max(
@@ -526,8 +527,8 @@ async function encode(x, n, total) {
       w = Math.max(1, u.r - u.x),
       h = Math.max(1, u.b - u.y),
       scale = Math.min(
-        (SIZE * (state.objectSize / 100)) / w,
-        (SIZE * (state.objectSize / 100)) / h,
+        (SIZE * (renderObjectSize() / 100)) / w,
+        (SIZE * (renderObjectSize() / 100)) / h,
       );
     spine.scale.set(clamp(scale, 0.05, 8));
     spine.position.set(
@@ -613,9 +614,9 @@ async function encodeCombined(list) {
       SpineStage.seek(spine, item.config.start);
       const bounds = spine.getLocalBounds();
       const scale = Math.min(
-        ((cellWidth - state.cropPadding * 2) * (state.objectSize / 100)) /
+        ((cellWidth - state.cropPadding * 2) * (renderObjectSize() / 100)) /
           Math.max(1, bounds.width),
-        ((cellHeight - state.cropPadding * 2) * (state.objectSize / 100)) /
+        ((cellHeight - state.cropPadding * 2) * (renderObjectSize() / 100)) /
           Math.max(1, bounds.height),
       );
       spine.scale.set(clamp(scale, 0.03, 8));
