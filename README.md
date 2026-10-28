@@ -10,7 +10,7 @@ Desktop tool dành cho team animation tạo GIF minh hoạ trong doc closure. Ap
 4. Click animation card hoặc checkbox để chọn những animation cần xuất.
 5. Chọn `GIF output` và bấm `Export GIF` để chạy batch một lần.
 
-Dùng ô search để lọc theo tên Spine hoặc animation. Nút `Uncheck all` bỏ chọn toàn bộ batch nhưng giữ nguyên skin và timeframe đã cấu hình.
+Dùng ô search để lọc theo tên Spine hoặc animation. `Check first` reset batch rồi chọn đúng animation đầu tiên của mỗi Spine; `Uncheck all` bỏ chọn toàn bộ nhưng giữ nguyên skin và timeframe đã cấu hình.
 
 Bật `Gộp Anim` để ghép toàn bộ animation đã tick vào một GIF 960×540. Tool tự xếp tối đa 5 animation mỗi hàng; mỗi animation dùng skin/timeframe riêng và tự loop nếu ngắn hơn thời lượng group.
 

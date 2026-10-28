@@ -214,6 +214,14 @@ svg {
   margin-left: 5px;
   color: #61d4ff;
 }
+.check-first {
+  border-color: #285b71 !important;
+  color: #9cdef7 !important;
+}
+.check-first b {
+  margin-left: 5px;
+  color: #61d4ff;
+}
 .scan,
 .export {
   height: 38px;
