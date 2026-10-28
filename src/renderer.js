@@ -8,7 +8,9 @@ const FPS = 20,
   MAX_GIF_BYTES = 512 * 1024,
   app = document.querySelector("#app");
 const OBJECT_SIZES = [50, 60, 70, 80, 90, 100];
+const GLOBAL_DURATIONS = [0.5, 1, 1.5];
 const savedObjectSize = Number(localStorage.getItem("gif-object-size"));
+const savedGlobalDuration = Number(localStorage.getItem("gif-global-duration"));
 const state = {
   source: localStorage.getItem("gif-source") || "",
   output: localStorage.getItem("gif-output") || "",
@@ -17,6 +19,9 @@ const state = {
   objectSize: OBJECT_SIZES.includes(savedObjectSize) ? savedObjectSize : 80,
   cropPadding: Number(localStorage.getItem("gif-crop-padding")) || 8,
   groupPerRow: Number(localStorage.getItem("gif-group-per-row")) || 5,
+  globalDuration: GLOBAL_DURATIONS.includes(savedGlobalDuration)
+    ? savedGlobalDuration
+    : 1,
   files: [],
   configs: new Map(),
   active: "",
@@ -55,12 +60,11 @@ const durationOf = (f, a) =>
 function configOf(f, a) {
   const k = keyOf(f, a);
   if (!state.configs.has(k)) {
-    const d = durationOf(f, a);
     state.configs.set(k, {
       selected: false,
       skin: f.skins?.[0] || "",
       start: 0,
-      end: Math.min(1, d || 1),
+      end: state.globalDuration,
     });
   }
   return state.configs.get(k);
@@ -297,7 +301,7 @@ function render() {
   ${state.error ? `<div class="notice error">${esc(state.error)}</div>` : ""}${state.status ? `<div class="notice ok">${esc(state.status)}</div>` : ""}
   <section class="batch-tools"><label><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg><input data-search value="${esc(state.search)}" placeholder="Search Spine hoặc animation..."></label><button class="clear-search ${state.search ? "" : "hidden"}" data-do="clear-search">Clear</button><span></span><button class="check-first" data-do="check-first" ${state.files.length ? "" : "disabled"}>Check first <b>${state.files.filter((file) => file.animations.length).length}</b></button><button class="uncheck-all" data-do="uncheck-all" ${count ? "" : "disabled"}>Uncheck all <b>${count || ""}</b></button></section>
   <section class="workspace"><div class="headrow"><span>Spine asset</span><span>Animations · chọn skin và animation để export</span></div><div class="groups">${visible.length ? visible.map(groupView).join("") : emptyView(Boolean(state.search))}</div></section>
-  <footer><div class="progress"><div><span>${state.exporting ? esc(state.status) : `${count} animation ready`}</span><strong>${state.exporting ? `${Math.round(state.progress * 100)}%` : state.combineSymbols ? "GROUP · AUTO OPTIMIZE" : "AUTO CROP · MAX 0.5 MB"}</strong></div><aside><em style="width:${state.exporting ? state.progress * 100 : 0}%"></em></aside></div><label class="export-option"><span>Object size</span><select data-role="object-size">${OBJECT_SIZES.map((value) => `<option value="${value}" ${state.objectSize === value ? "selected" : ""}>${value}%</option>`).join("")}</select></label><label class="export-option"><span>Padding</span><select data-role="crop-padding"><option value="4" ${state.cropPadding === 4 ? "selected" : ""}>4 px</option><option value="8" ${state.cropPadding === 8 ? "selected" : ""}>8 px</option><option value="16" ${state.cropPadding === 16 ? "selected" : ""}>16 px</option><option value="24" ${state.cropPadding === 24 ? "selected" : ""}>24 px</option></select></label>${state.combineSymbols ? `<label class="export-option"><span>Object / row</span><select data-role="group-per-row">${[2, 3, 4, 5, 6].map((value) => `<option value="${value}" ${state.groupPerRow === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>` : ""}<label class="checker-export"><input type="checkbox" data-role="combine-symbols" ${state.combineSymbols ? "checked" : ""}><span>Gộp Anim</span></label><label class="checker-export"><input type="checkbox" data-role="bake-checker" ${state.bakeChecker ? "checked" : ""}><span>Bake nền caro</span></label><button class="export" data-do="export" ${!count || state.exporting ? "disabled" : ""}>${icon("export")} ${state.exporting ? "Exporting…" : state.combineSymbols ? `Export 1 Group GIF` : `Export ${count} GIF${count === 1 ? "" : "s"}`}</button></footer>
+  <footer><div class="progress"><div><span>${state.exporting ? esc(state.status) : `${count} animation ready`}</span><strong>${state.exporting ? `${Math.round(state.progress * 100)}%` : state.combineSymbols ? "GROUP · AUTO OPTIMIZE" : "AUTO CROP · MAX 0.5 MB"}</strong></div><aside><em style="width:${state.exporting ? state.progress * 100 : 0}%"></em></aside></div><label class="export-option"><span>All duration</span><select data-role="global-duration">${GLOBAL_DURATIONS.map((value) => `<option value="${value}" ${state.globalDuration === value ? "selected" : ""}>${value}s</option>`).join("")}</select></label><label class="export-option"><span>Object size</span><select data-role="object-size">${OBJECT_SIZES.map((value) => `<option value="${value}" ${state.objectSize === value ? "selected" : ""}>${value}%</option>`).join("")}</select></label><label class="export-option"><span>Padding</span><select data-role="crop-padding"><option value="4" ${state.cropPadding === 4 ? "selected" : ""}>4 px</option><option value="8" ${state.cropPadding === 8 ? "selected" : ""}>8 px</option><option value="16" ${state.cropPadding === 16 ? "selected" : ""}>16 px</option><option value="24" ${state.cropPadding === 24 ? "selected" : ""}>24 px</option></select></label>${state.combineSymbols ? `<label class="export-option"><span>Object / row</span><select data-role="group-per-row">${[2, 3, 4, 5, 6].map((value) => `<option value="${value}" ${state.groupPerRow === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>` : ""}<label class="checker-export"><input type="checkbox" data-role="combine-symbols" ${state.combineSymbols ? "checked" : ""}><span>Gộp Anim</span></label><label class="checker-export"><input type="checkbox" data-role="bake-checker" ${state.bakeChecker ? "checked" : ""}><span>Bake nền caro</span></label><button class="export" data-do="export" ${!count || state.exporting ? "disabled" : ""}>${icon("export")} ${state.exporting ? "Exporting…" : state.combineSymbols ? `Export 1 Group GIF` : `Export ${count} GIF${count === 1 ? "" : "s"}`}</button></footer>
   <aside class="preview ${state.active ? "open" : ""}"><div class="preview-title"><div><strong data-preview-name>Preview</strong><span>Loop theo đúng timeframe và skin đã chọn</span></div><div class="preview-actions"><button data-do="toggle-preview" title="Play/Pause">${state.previewPaused ? "▶" : "Ⅱ"}</button><button data-do="close" title="Đóng preview">×</button></div></div><div data-canvas class="canvas"></div>${previewTrimView()}</aside></main>`;
   mountStage();
 }
@@ -841,6 +845,15 @@ app.addEventListener("change", (e) => {
   if (t.dataset.role === "object-size") {
     state.objectSize = Number(t.value) || 80;
     localStorage.setItem("gif-object-size", String(state.objectSize));
+    render();
+    return;
+  }
+  if (t.dataset.role === "global-duration") {
+    state.globalDuration = Number(t.value) || 1;
+    localStorage.setItem("gif-global-duration", String(state.globalDuration));
+    items().forEach((item) => {
+      item.config.end = item.config.start + state.globalDuration;
+    });
     render();
     return;
   }
