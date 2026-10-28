@@ -4,6 +4,7 @@ import { SpineStage } from "./spineStage.js";
 
 const FPS = 20,
   SIZE = 512,
+  GIF_ALPHA_THRESHOLD = 96,
   MAX_GIF_BYTES = 512 * 1024,
   app = document.querySelector("#app");
 const OBJECT_SIZES = [50, 60, 70, 80, 90, 100];
@@ -99,7 +100,7 @@ function clean(v) {
 function normalizeGifAlpha(source) {
   const pixels = new Uint8ClampedArray(source);
   for (let index = 0; index < pixels.length; index += 4) {
-    if (pixels[index + 3] < 96) {
+    if (pixels[index + 3] < GIF_ALPHA_THRESHOLD) {
       pixels[index] = 0;
       pixels[index + 1] = 0;
       pixels[index + 2] = 0;
@@ -118,17 +119,40 @@ function visiblePixelBounds(canvas) {
   const pixels = canvas
     .getContext("2d", { willReadFrequently: true })
     .getImageData(0, 0, width, height).data;
-  let left = width, top = height, right = -1, bottom = -1;
+  const columns = new Uint32Array(width);
+  const rows = new Uint32Array(height);
+  let total = 0;
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      if (pixels[(y * width + x) * 4 + 3] < 24) continue;
-      left = Math.min(left, x);
-      top = Math.min(top, y);
-      right = Math.max(right, x);
-      bottom = Math.max(bottom, y);
+      if (pixels[(y * width + x) * 4 + 3] < GIF_ALPHA_THRESHOLD) continue;
+      columns[x] += 1;
+      rows[y] += 1;
+      total += 1;
     }
   }
-  return right < left ? null : { left, top, right, bottom };
+  if (!total) return null;
+  const trim = Math.floor(total * 0.005);
+  const quantileEdge = (counts, reverse = false) => {
+    let discarded = 0;
+    if (reverse) {
+      for (let index = counts.length - 1; index >= 0; index -= 1) {
+        discarded += counts[index];
+        if (discarded > trim) return index;
+      }
+      return 0;
+    }
+    for (let index = 0; index < counts.length; index += 1) {
+      discarded += counts[index];
+      if (discarded > trim) return index;
+    }
+    return counts.length - 1;
+  };
+  return {
+    left: quantileEdge(columns),
+    top: quantileEdge(rows),
+    right: quantileEdge(columns, true),
+    bottom: quantileEdge(rows, true),
+  };
 }
 
 function expandCrop(bounds, padding, maxWidth, maxHeight) {
