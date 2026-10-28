@@ -34,6 +34,7 @@
   "dependencies": {
     "electron-squirrel-startup": "^1.0.1",
     "gifenc": "^1.0.3",
+    "gifsicle-wasm-browser": "^1.5.19",
     "pixi-spine": "^4.0.6",
     "pixi.js": "^7.4.3"
   }

@@ -1,5 +1,6 @@
 import "./index.css";
 import { GIFEncoder, quantize, applyPalette } from "gifenc";
+import gifsicle from "gifsicle-wasm-browser";
 import { SpineStage } from "./spineStage.js";
 
 const FPS = 20,
@@ -16,6 +17,7 @@ const state = {
   output: localStorage.getItem("gif-output") || "",
   bakeChecker: localStorage.getItem("gif-bake-checker") !== "false",
   combineSymbols: localStorage.getItem("gif-combine-symbols") === "true",
+  optimizeGif: localStorage.getItem("gif-optimize") === "true",
   objectSize: OBJECT_SIZES.includes(savedObjectSize) ? savedObjectSize : 80,
   cropPadding: Number(localStorage.getItem("gif-crop-padding")) || 8,
   groupPerRow: Number(localStorage.getItem("gif-group-per-row")) || 5,
@@ -216,6 +218,35 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+async function optimizeGifFile(file) {
+  const source = base64ToBytes(file.dataBase64);
+  try {
+    const output = await gifsicle.run({
+      input: [{ file: source.buffer, name: "input.gif" }],
+      command: [
+        "-O3 --lossy=80 --colors 128 input.gif -o /out/optimized.gif",
+      ],
+      isStrict: true,
+    });
+    if (!output?.[0]) return file;
+    const optimized = new Uint8Array(await output[0].arrayBuffer());
+    if (!optimized.length || optimized.length >= source.length) return file;
+    return { ...file, dataBase64: bytesToBase64(optimized) };
+  } catch (error) {
+    console.warn("Gifsicle optimize failed; keeping original GIF.", error);
+    return file;
+  }
+}
+
 async function encodeWithinSize({
   duration,
   width,
@@ -301,7 +332,7 @@ function render() {
   ${state.error ? `<div class="notice error">${esc(state.error)}</div>` : ""}${state.status ? `<div class="notice ok">${esc(state.status)}</div>` : ""}
   <section class="batch-tools"><label><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg><input data-search value="${esc(state.search)}" placeholder="Search Spine hoặc animation..."></label><button class="clear-search ${state.search ? "" : "hidden"}" data-do="clear-search">Clear</button><span></span><button class="check-first" data-do="check-first" ${state.files.length ? "" : "disabled"}>Check first <b>${state.files.filter((file) => file.animations.length).length}</b></button><button class="uncheck-all" data-do="uncheck-all" ${count ? "" : "disabled"}>Uncheck all <b>${count || ""}</b></button></section>
   <section class="workspace"><div class="headrow"><span>Spine asset</span><span>Animations · chọn skin và animation để export</span></div><div class="groups">${visible.length ? visible.map(groupView).join("") : emptyView(Boolean(state.search))}</div></section>
-  <footer><div class="progress"><div><span>${state.exporting ? esc(state.status) : `${count} animation ready`}</span><strong>${state.exporting ? `${Math.round(state.progress * 100)}%` : state.combineSymbols ? "GROUP · AUTO OPTIMIZE" : "AUTO CROP · MAX 0.5 MB"}</strong></div><aside><em style="width:${state.exporting ? state.progress * 100 : 0}%"></em></aside></div><label class="export-option"><span>All duration</span><select data-role="global-duration">${GLOBAL_DURATIONS.map((value) => `<option value="${value}" ${state.globalDuration === value ? "selected" : ""}>${value}s</option>`).join("")}</select></label><label class="export-option"><span>Object size</span><select data-role="object-size">${OBJECT_SIZES.map((value) => `<option value="${value}" ${state.objectSize === value ? "selected" : ""}>${value}%</option>`).join("")}</select></label><label class="export-option"><span>Padding</span><select data-role="crop-padding"><option value="4" ${state.cropPadding === 4 ? "selected" : ""}>4 px</option><option value="8" ${state.cropPadding === 8 ? "selected" : ""}>8 px</option><option value="16" ${state.cropPadding === 16 ? "selected" : ""}>16 px</option><option value="24" ${state.cropPadding === 24 ? "selected" : ""}>24 px</option></select></label>${state.combineSymbols ? `<label class="export-option"><span>Object / row</span><select data-role="group-per-row">${[2, 3, 4, 5, 6].map((value) => `<option value="${value}" ${state.groupPerRow === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>` : ""}<label class="checker-export"><input type="checkbox" data-role="combine-symbols" ${state.combineSymbols ? "checked" : ""}><span>Gộp Anim</span></label><label class="checker-export"><input type="checkbox" data-role="bake-checker" ${state.bakeChecker ? "checked" : ""}><span>Bake nền caro</span></label><button class="export" data-do="export" ${!count || state.exporting ? "disabled" : ""}>${icon("export")} ${state.exporting ? "Exporting…" : state.combineSymbols ? `Export 1 Group GIF` : `Export ${count} GIF${count === 1 ? "" : "s"}`}</button></footer>
+  <footer><div class="progress"><div><span>${state.exporting ? esc(state.status) : `${count} animation ready`}</span><strong>${state.exporting ? `${Math.round(state.progress * 100)}%` : state.combineSymbols ? "GROUP · AUTO OPTIMIZE" : "AUTO CROP · MAX 0.5 MB"}</strong></div><aside><em style="width:${state.exporting ? state.progress * 100 : 0}%"></em></aside></div><label class="export-option"><span>All duration</span><select data-role="global-duration">${GLOBAL_DURATIONS.map((value) => `<option value="${value}" ${state.globalDuration === value ? "selected" : ""}>${value}s</option>`).join("")}</select></label><label class="export-option"><span>Object size</span><select data-role="object-size">${OBJECT_SIZES.map((value) => `<option value="${value}" ${state.objectSize === value ? "selected" : ""}>${value}%</option>`).join("")}</select></label><label class="export-option"><span>Padding</span><select data-role="crop-padding"><option value="4" ${state.cropPadding === 4 ? "selected" : ""}>4 px</option><option value="8" ${state.cropPadding === 8 ? "selected" : ""}>8 px</option><option value="16" ${state.cropPadding === 16 ? "selected" : ""}>16 px</option><option value="24" ${state.cropPadding === 24 ? "selected" : ""}>24 px</option></select></label>${state.combineSymbols ? `<label class="export-option"><span>Object / row</span><select data-role="group-per-row">${[2, 3, 4, 5, 6].map((value) => `<option value="${value}" ${state.groupPerRow === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>` : ""}<label class="checker-export"><input type="checkbox" data-role="optimize-gif" ${state.optimizeGif ? "checked" : ""}><span>Optimize GIF</span></label><label class="checker-export"><input type="checkbox" data-role="combine-symbols" ${state.combineSymbols ? "checked" : ""}><span>Gộp Anim</span></label><label class="checker-export"><input type="checkbox" data-role="bake-checker" ${state.bakeChecker ? "checked" : ""}><span>Nền caro</span></label><button class="export" data-do="export" ${!count || state.exporting ? "disabled" : ""}>${icon("export")} ${state.exporting ? "Exporting…" : state.combineSymbols ? `Export 1 Group GIF` : `Export ${count} GIF${count === 1 ? "" : "s"}`}</button></footer>
   <aside class="preview ${state.active ? "open" : ""}"><div class="preview-title"><div><strong data-preview-name>Preview</strong><span>Loop theo đúng timeframe và skin đã chọn</span></div><div class="preview-actions"><button data-do="toggle-preview" title="Play/Pause">${state.previewPaused ? "▶" : "Ⅱ"}</button><button data-do="close" title="Đóng preview">×</button></div></div><div data-canvas class="canvas"></div>${previewTrimView()}</aside></main>`;
   mountStage();
 }
@@ -724,6 +755,14 @@ async function exportAll() {
       for (let i = 0; i < list.length; i++)
         files.push(await encode(list[i], i, list.length));
     }
+    if (state.optimizeGif) {
+      for (let index = 0; index < files.length; index += 1) {
+        state.status = `Optimizing GIF · ${index + 1}/${files.length}`;
+        state.progress = (index + 1) / files.length;
+        updateProgress();
+        files[index] = await optimizeGifFile(files[index]);
+      }
+    }
     const r = await window.spinePreview.saveBatchGifs({
       outputDir: state.output.trim(),
       files,
@@ -834,6 +873,12 @@ app.addEventListener("change", (e) => {
   if (t.dataset.role === "bake-checker") {
     state.bakeChecker = t.checked;
     localStorage.setItem("gif-bake-checker", String(t.checked));
+    return;
+  }
+  if (t.dataset.role === "optimize-gif") {
+    state.optimizeGif = t.checked;
+    localStorage.setItem("gif-optimize", String(t.checked));
+    render();
     return;
   }
   if (t.dataset.role === "combine-symbols") {
