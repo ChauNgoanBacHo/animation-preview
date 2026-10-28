@@ -4,13 +4,16 @@ import { SpineStage } from "./spineStage.js";
 
 const FPS = 20,
   SIZE = 512,
+  MAX_GIF_BYTES = 512 * 1024,
   app = document.querySelector("#app");
+const OBJECT_SIZES = [50, 60, 70, 80, 90, 100];
+const savedObjectSize = Number(localStorage.getItem("gif-object-size"));
 const state = {
   source: localStorage.getItem("gif-source") || "",
   output: localStorage.getItem("gif-output") || "",
   bakeChecker: localStorage.getItem("gif-bake-checker") !== "false",
   combineSymbols: localStorage.getItem("gif-combine-symbols") === "true",
-  objectSize: Number(localStorage.getItem("gif-object-size")) || 88,
+  objectSize: OBJECT_SIZES.includes(savedObjectSize) ? savedObjectSize : 80,
   cropPadding: Number(localStorage.getItem("gif-crop-padding")) || 8,
   groupPerRow: Number(localStorage.getItem("gif-group-per-row")) || 5,
   files: [],
@@ -27,6 +30,7 @@ const state = {
   progress: 0,
   status: "",
   error: "",
+  search: "",
 };
 const icon = (name) =>
   name === "folder"
@@ -70,6 +74,21 @@ function items() {
 }
 function selected() {
   return items().filter((x) => x.config.selected);
+}
+function visibleFiles() {
+  const query = state.search.trim().toLowerCase();
+  if (!query) return state.files;
+  return state.files
+    .map((file) => {
+      if (file.fileName.toLowerCase().includes(query)) return file;
+      return {
+        ...file,
+        animations: file.animations.filter((animation) =>
+          animation.toLowerCase().includes(query),
+        ),
+      };
+    })
+    .filter((file) => file.animations.length);
 }
 function clean(v) {
   return String(v)
@@ -148,19 +167,117 @@ function framePixelsForExport(
   return context.getImageData(0, 0, width, height).data;
 }
 
+function resizedCanvas(source, width, height) {
+  if (source.width === width && source.height === height) return source;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(source, 0, 0, width, height);
+  return canvas;
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 32768) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 32768));
+  }
+  return btoa(binary);
+}
+
+async function encodeWithinSize({
+  duration,
+  width,
+  height,
+  bakeChecker,
+  renderFrame,
+  onProgress,
+}) {
+  const profiles = [
+        { scale: 1, fps: 20, colors: 256 },
+        { scale: 0.9, fps: 18, colors: 192 },
+        { scale: 0.8, fps: 15, colors: 128 },
+        { scale: 0.7, fps: 12, colors: 96 },
+        { scale: 0.6, fps: 10, colors: 64 },
+        { scale: 0.5, fps: 8, colors: 48 },
+        { scale: 0.4, fps: 6, colors: 32 },
+        { scale: 0.3, fps: 5, colors: 24 },
+        { scale: 0.22, fps: 4, colors: 16 },
+      ];
+  let result = null;
+  for (let profileIndex = 0; profileIndex < profiles.length; profileIndex += 1) {
+    const profile = profiles[profileIndex];
+    const outputWidth = Math.max(2, Math.round(width * profile.scale));
+    const outputHeight = Math.max(2, Math.round(height * profile.scale));
+    const frameCount = Math.max(2, Math.round(duration * profile.fps));
+    const gif = GIFEncoder();
+    for (let frame = 0; frame < frameCount; frame += 1) {
+      const elapsed = (frame / Math.max(1, frameCount - 1)) * duration;
+      const rawCanvas = await renderFrame(elapsed);
+      const frameCanvas = resizedCanvas(rawCanvas, outputWidth, outputHeight);
+      const pixels = normalizeGifAlpha(
+        framePixelsForExport(
+          frameCanvas,
+          bakeChecker,
+          outputWidth,
+          outputHeight,
+        ),
+      );
+      const palette = quantize(pixels, profile.colors, {
+        format: "rgba4444",
+        oneBitAlpha: true,
+        clearAlpha: true,
+        clearAlphaThreshold: 0,
+        clearAlphaColor: 0,
+      });
+      const bitmap = applyPalette(pixels, palette, "rgba4444");
+      const transparentIndex = palette.findIndex((color) => color[3] === 0);
+      if (transparentIndex >= 0) {
+        const transparentIndexes = new Set(
+          palette
+            .map((color, index) => (color[3] === 0 ? index : -1))
+            .filter((index) => index >= 0),
+        );
+        for (let index = 0; index < bitmap.length; index += 1) {
+          if (transparentIndexes.has(bitmap[index])) bitmap[index] = transparentIndex;
+        }
+      }
+      gif.writeFrame(bitmap, outputWidth, outputHeight, {
+        palette,
+        delay: (duration * 1000) / frameCount,
+        repeat: 0,
+        transparent: transparentIndex >= 0,
+        transparentIndex: Math.max(0, transparentIndex),
+        dispose: 2,
+      });
+      onProgress?.(frame, frameCount, profileIndex, profiles.length);
+      await new Promise(requestAnimationFrame);
+    }
+    gif.finish();
+    const bytes = gif.bytes();
+    result = { bytes, ...profile, width: outputWidth, height: outputHeight };
+    if (bytes.length <= MAX_GIF_BYTES) break;
+  }
+  return result;
+}
+
 function render() {
   const count = selected().length,
-    total = state.files.reduce((n, f) => n + f.animations.length, 0);
+    total = state.files.reduce((n, f) => n + f.animations.length, 0),
+    visible = visibleFiles();
   app.innerHTML = `<main><header><div class="brand"><b>S</b><div><h1>Spine GIF Expoter</h1><p>Doc closure batch tool</p></div></div><div class="stats"><span><strong>${state.files.length}</strong> Spine</span><span><strong>${total}</strong> anim</span><span><strong>${count}</strong> selected</span></div></header>
   <section class="toolbar"><label><span>Source folder</span><div><input data-source value="${esc(state.source)}" placeholder="Folder chứa Spine..."><button data-do="source">${icon("folder")}</button></div></label><button class="scan" data-do="scan" ${state.scanning ? "disabled" : ""}>${state.scanning ? "Scanning…" : "Scan Spine"}</button><i></i><label><span>GIF output</span><div><input data-output value="${esc(state.output)}" placeholder="Folder lưu GIF..."><button data-do="output">${icon("folder")}</button></div></label></section>
   ${state.error ? `<div class="notice error">${esc(state.error)}</div>` : ""}${state.status ? `<div class="notice ok">${esc(state.status)}</div>` : ""}
-  <section class="workspace"><div class="headrow"><span>Spine asset</span><span>Animations · chọn skin và animation để export</span></div><div class="groups">${state.files.length ? state.files.map(groupView).join("") : emptyView()}</div></section>
-  <footer><div class="progress"><div><span>${state.exporting ? esc(state.status) : `${count} animation ready`}</span><strong>${state.exporting ? `${Math.round(state.progress * 100)}%` : state.combineSymbols ? "GROUP · 960×540" : "AUTO CROP · 20 FPS"}</strong></div><aside><em style="width:${state.exporting ? state.progress * 100 : 0}%"></em></aside></div><label class="export-option"><span>Object size</span><select data-role="object-size"><option value="70" ${state.objectSize === 70 ? "selected" : ""}>70%</option><option value="80" ${state.objectSize === 80 ? "selected" : ""}>80%</option><option value="88" ${state.objectSize === 88 ? "selected" : ""}>88%</option><option value="96" ${state.objectSize === 96 ? "selected" : ""}>96%</option></select></label><label class="export-option"><span>Padding</span><select data-role="crop-padding"><option value="4" ${state.cropPadding === 4 ? "selected" : ""}>4 px</option><option value="8" ${state.cropPadding === 8 ? "selected" : ""}>8 px</option><option value="16" ${state.cropPadding === 16 ? "selected" : ""}>16 px</option><option value="24" ${state.cropPadding === 24 ? "selected" : ""}>24 px</option></select></label>${state.combineSymbols ? `<label class="export-option"><span>Object / row</span><select data-role="group-per-row">${[2, 3, 4, 5, 6].map((value) => `<option value="${value}" ${state.groupPerRow === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>` : ""}<label class="checker-export"><input type="checkbox" data-role="combine-symbols" ${state.combineSymbols ? "checked" : ""}><span>Gộp Anim</span></label><label class="checker-export"><input type="checkbox" data-role="bake-checker" ${state.bakeChecker ? "checked" : ""}><span>Bake nền caro</span></label><button class="export" data-do="export" ${!count || state.exporting ? "disabled" : ""}>${icon("export")} ${state.exporting ? "Exporting…" : state.combineSymbols ? `Export 1 Group GIF` : `Export ${count} GIF${count === 1 ? "" : "s"}`}</button></footer>
+  <section class="batch-tools"><label><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg><input data-search value="${esc(state.search)}" placeholder="Search Spine hoặc animation..."></label><button class="clear-search ${state.search ? "" : "hidden"}" data-do="clear-search">Clear</button><span></span><button class="uncheck-all" data-do="uncheck-all" ${count ? "" : "disabled"}>Uncheck all <b>${count || ""}</b></button></section>
+  <section class="workspace"><div class="headrow"><span>Spine asset</span><span>Animations · chọn skin và animation để export</span></div><div class="groups">${visible.length ? visible.map(groupView).join("") : emptyView(Boolean(state.search))}</div></section>
+  <footer><div class="progress"><div><span>${state.exporting ? esc(state.status) : `${count} animation ready`}</span><strong>${state.exporting ? `${Math.round(state.progress * 100)}%` : state.combineSymbols ? "GROUP · AUTO OPTIMIZE" : "AUTO CROP · MAX 0.5 MB"}</strong></div><aside><em style="width:${state.exporting ? state.progress * 100 : 0}%"></em></aside></div><label class="export-option"><span>Object size</span><select data-role="object-size">${OBJECT_SIZES.map((value) => `<option value="${value}" ${state.objectSize === value ? "selected" : ""}>${value}%</option>`).join("")}</select></label><label class="export-option"><span>Padding</span><select data-role="crop-padding"><option value="4" ${state.cropPadding === 4 ? "selected" : ""}>4 px</option><option value="8" ${state.cropPadding === 8 ? "selected" : ""}>8 px</option><option value="16" ${state.cropPadding === 16 ? "selected" : ""}>16 px</option><option value="24" ${state.cropPadding === 24 ? "selected" : ""}>24 px</option></select></label>${state.combineSymbols ? `<label class="export-option"><span>Object / row</span><select data-role="group-per-row">${[2, 3, 4, 5, 6].map((value) => `<option value="${value}" ${state.groupPerRow === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>` : ""}<label class="checker-export"><input type="checkbox" data-role="combine-symbols" ${state.combineSymbols ? "checked" : ""}><span>Gộp Anim</span></label><label class="checker-export"><input type="checkbox" data-role="bake-checker" ${state.bakeChecker ? "checked" : ""}><span>Bake nền caro</span></label><button class="export" data-do="export" ${!count || state.exporting ? "disabled" : ""}>${icon("export")} ${state.exporting ? "Exporting…" : state.combineSymbols ? `Export 1 Group GIF` : `Export ${count} GIF${count === 1 ? "" : "s"}`}</button></footer>
   <aside class="preview ${state.active ? "open" : ""}"><div class="preview-title"><div><strong data-preview-name>Preview</strong><span>Loop theo đúng timeframe và skin đã chọn</span></div><div class="preview-actions"><button data-do="toggle-preview" title="Play/Pause">${state.previewPaused ? "▶" : "Ⅱ"}</button><button data-do="close" title="Đóng preview">×</button></div></div><div data-canvas class="canvas"></div>${previewTrimView()}</aside></main>`;
   mountStage();
 }
-function emptyView() {
-  return `<div class="empty">${icon("folder")}<h2>Chưa có Spine nào</h2><p>Chọn source folder và scan. Tool sẽ gom asset theo chiều dọc, mỗi Spine là một group animation.</p></div>`;
+function emptyView(searching = false) {
+  return `<div class="empty">${icon("folder")}<h2>${searching ? "Không tìm thấy kết quả" : "Chưa có Spine nào"}</h2><p>${searching ? `Không có Spine hoặc animation khớp với “${esc(state.search)}”.` : "Chọn source folder và scan. Tool sẽ gom asset theo chiều dọc, mỗi Spine là một group animation."}</p></div>`;
 }
 function groupView(f, i) {
   return `<article class="group"><aside class="file"><small>${String(i + 1).padStart(2, "0")}</small><div><h2>${esc(f.fileName.replace(/\.json$/i, ""))}</h2><strong class="anim-count"><b>${f.animations.length}</b> animations</strong><div class="file-meta"><span>Spine ${esc(f.version)}</span></div></div></aside><section>${f.animations.map((a) => animView(f, a)).join("") || '<p class="none">Không có animation</p>'}</section></article>`;
@@ -411,67 +528,32 @@ async function encode(x, n, total) {
         : bounds;
     }
     const crop = expandCrop(pixelBounds, state.cropPadding, SIZE, SIZE);
-    const gif = GIFEncoder();
     const bakeChecker = state.bakeChecker || x.file.usesAdditiveBlend;
-    for (let i = 0; i < samples.length; i++) {
-      SpineStage.seek(spine, samples[i].time);
-      stage.renderOnce();
-      const frameCanvas = stage.extractCanvasRegion(
+    const duration = Math.max(0.05, x.config.end - x.config.start);
+    const encoded = await encodeWithinSize({
+      duration,
+      width: crop.width,
+      height: crop.height,
+      bakeChecker,
+      renderFrame: async (elapsed) => {
+        SpineStage.seek(spine, x.config.start + elapsed);
+        stage.renderOnce();
+        return stage.extractCanvasRegion(
           crop.x,
           crop.y,
           crop.width,
           crop.height,
-        ),
-        pixels = normalizeGifAlpha(
-          framePixelsForExport(
-            frameCanvas,
-            bakeChecker,
-            crop.width,
-            crop.height,
-          ),
-        ),
-        palette = quantize(pixels, 256, {
-          format: "rgba4444",
-          oneBitAlpha: true,
-          clearAlpha: true,
-          clearAlphaThreshold: 0,
-          clearAlphaColor: 0,
-        }),
-        index = applyPalette(pixels, palette, "rgba4444"),
-        transparentIndex = palette.findIndex((color) => color[3] === 0);
-      if (transparentIndex >= 0) {
-        const transparentIndexes = new Set(
-          palette
-            .map((color, paletteIndex) => (color[3] === 0 ? paletteIndex : -1))
-            .filter((paletteIndex) => paletteIndex >= 0),
         );
-        for (let pixelIndex = 0; pixelIndex < index.length; pixelIndex += 1) {
-          if (transparentIndexes.has(index[pixelIndex])) {
-            index[pixelIndex] = transparentIndex;
-          }
-        }
-      }
-      gif.writeFrame(index, crop.width, crop.height, {
-        palette,
-        delay: 1000 / FPS,
-        repeat: 0,
-        transparent: transparentIndex >= 0,
-        transparentIndex: Math.max(0, transparentIndex),
-        dispose: 2,
-      });
-      state.progress = (n + (i + 1) / samples.length) / total;
-      state.status = `${x.file.fileName.replace(/\.json$/i, "")} / ${x.animation}`;
-      updateProgress();
-      await new Promise(requestAnimationFrame);
-    }
-    gif.finish();
-    const bytes = gif.bytes();
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 32768)
-      binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+      },
+      onProgress: (frame, frameCount, profileIndex) => {
+        state.progress = (n + (frame + 1) / frameCount) / total;
+        state.status = `${profileIndex ? "Optimizing · " : ""}${x.file.fileName.replace(/\.json$/i, "")} / ${x.animation}`;
+        updateProgress();
+      },
+    });
     return {
       fileName: `${clean(x.file.fileName)}_${clean(x.animation)}.gif`,
-      dataBase64: btoa(binary),
+      dataBase64: bytesToBase64(encoded.bytes),
     };
   } finally {
     stage.destroy();
@@ -550,59 +632,36 @@ async function encodeCombined(list) {
         : bounds;
     }
     const crop = expandCrop(pixelBounds, state.cropPadding, width, height);
-    const gif = GIFEncoder();
     const bakeChecker =
       state.bakeChecker || list.some((item) => item.file.usesAdditiveBlend);
-    for (let frame = 0; frame < frameCount; frame += 1) {
-      const elapsed = frame / FPS;
-      loaded.forEach(({ item, spine }) => {
-        const length = Math.max(0.01, item.config.end - item.config.start);
-        SpineStage.seek(spine, item.config.start + (elapsed % length));
-      });
-      stage.renderOnce();
-      const frameCanvas = stage.extractCanvasRegion(
-        crop.x,
-        crop.y,
-        crop.width,
-        crop.height,
-      );
-      const pixels = normalizeGifAlpha(
-        framePixelsForExport(
-          frameCanvas,
-          bakeChecker,
+    const encoded = await encodeWithinSize({
+      duration,
+      width: crop.width,
+      height: crop.height,
+      bakeChecker,
+      renderFrame: async (elapsed) => {
+        loaded.forEach(({ item, spine }) => {
+          const length = Math.max(0.01, item.config.end - item.config.start);
+          SpineStage.seek(spine, item.config.start + (elapsed % length));
+        });
+        stage.renderOnce();
+        return stage.extractCanvasRegion(
+          crop.x,
+          crop.y,
           crop.width,
           crop.height,
-        ),
-      );
-      const palette = quantize(pixels, 256, {
-        format: "rgba4444",
-        oneBitAlpha: true,
-        clearAlpha: true,
-        clearAlphaThreshold: 0,
-        clearAlphaColor: 0,
-      });
-      const bitmap = applyPalette(pixels, palette, "rgba4444");
-      const transparentIndex = palette.findIndex((color) => color[3] === 0);
-      gif.writeFrame(bitmap, crop.width, crop.height, {
-        palette,
-        delay: 1000 / FPS,
-        repeat: 0,
-        transparent: transparentIndex >= 0,
-        transparentIndex: Math.max(0, transparentIndex),
-        dispose: 2,
-      });
-      state.progress = (frame + 1) / frameCount;
-      state.status = `Rendering group · ${frame + 1}/${frameCount}`;
-      updateProgress();
-      await new Promise(requestAnimationFrame);
-    }
-    gif.finish();
-    const bytes = gif.bytes();
-    let binary = "";
-    for (let index = 0; index < bytes.length; index += 32768) {
-      binary += String.fromCharCode(...bytes.subarray(index, index + 32768));
-    }
-    return { fileName: "anim_group.gif", dataBase64: btoa(binary) };
+        );
+      },
+      onProgress: (frame, count, profileIndex) => {
+        state.progress = (frame + 1) / count;
+        state.status = `${profileIndex ? "Optimizing" : "Rendering group"} · ${frame + 1}/${count}`;
+        updateProgress();
+      },
+    });
+    return {
+      fileName: "anim_group.gif",
+      dataBase64: bytesToBase64(encoded.bytes),
+    };
   } finally {
     stage.destroy();
     host.remove();
@@ -698,10 +757,33 @@ app.addEventListener("click", async (e) => {
     destroyStage();
     render();
   } else if (a === "export") exportAll();
+  else if (a === "uncheck-all") {
+    items().forEach((item) => {
+      item.config.selected = false;
+    });
+    render();
+  } else if (a === "clear-search") {
+    state.search = "";
+    render();
+    document.querySelector("[data-search]")?.focus();
+  }
 });
 app.addEventListener("input", (e) => {
   const t = e.target;
   if (t.matches("[data-source]")) state.source = t.value;
+  else if (t.matches("[data-search]")) {
+    state.search = t.value;
+    const visible = visibleFiles();
+    const groups = document.querySelector(".groups");
+    if (groups) {
+      groups.innerHTML = visible.length
+        ? visible.map(groupView).join("")
+        : emptyView(Boolean(state.search));
+    }
+    document
+      .querySelector(".clear-search")
+      ?.classList.toggle("hidden", !state.search);
+  }
   else if (t.matches("[data-output]")) {
     state.output = t.value;
     localStorage.setItem("gif-output", t.value);
@@ -723,7 +805,7 @@ app.addEventListener("change", (e) => {
     return;
   }
   if (t.dataset.role === "object-size") {
-    state.objectSize = Number(t.value) || 88;
+    state.objectSize = Number(t.value) || 80;
     localStorage.setItem("gif-object-size", String(state.objectSize));
     render();
     return;
