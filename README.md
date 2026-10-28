@@ -12,7 +12,9 @@ Desktop tool dành cho team animation tạo GIF minh hoạ trong doc closure. Ap
 
 Bật `Gộp Anim` để ghép toàn bộ animation đã tick vào một GIF 960×540. Tool tự xếp tối đa 5 animation mỗi hàng; mỗi animation dùng skin/timeframe riêng và tự loop nếu ngắn hơn thời lượng group.
 
-GIF mặc định được xuất ở 512×512, 20 FPS, loop vô hạn, dùng skin đã chọn và có tên dạng `SpineName_AnimationName.gif`. Option `Bake nền caro` được bật mặc định để đưa nền caro vào file GIF; tắt option này nếu cần GIF transparent.
+GIF được render trong vùng tối đa 512×512 rồi tự crop theo nội dung, chạy ở 20 FPS, loop vô hạn, dùng skin đã chọn và có tên dạng `SpineName_AnimationName.gif`. Option `Bake nền caro` được bật mặc định để đưa nền caro vào file GIF; tắt option này nếu cần GIF transparent.
+
+`Object size` điều chỉnh độ lớn nhân vật khi render. Tool tự quét pixel alpha trên toàn bộ timeframe và crop transparent padding theo giá trị `Padding`, giúp file GIF gọn và nhẹ hơn. Khi bật `Gộp Anim`, dùng `Object / row` để chọn số animation trên mỗi hàng của group GIF.
 
 ## Setup
 

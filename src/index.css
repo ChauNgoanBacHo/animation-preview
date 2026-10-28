@@ -281,6 +281,14 @@ svg {
     0 3px 8px #00000045,
     inset 0 1px 0 #ffffff04;
 }
+.anim {
+  cursor: pointer;
+}
+.anim input,
+.anim select,
+.anim [data-trim-editor] {
+  cursor: default;
+}
 .anim.selected {
   z-index: 1;
   border-color: #48cfff;
@@ -627,6 +635,32 @@ footer {
   white-space: nowrap;
   box-shadow: inset 0 1px 0 #ffffff08;
 }
+.export-option {
+  display: grid;
+  gap: 3px;
+  min-width: 76px;
+  color: #71829a;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.export-option select {
+  height: 26px;
+  padding: 0 22px 0 8px;
+  border: 1px solid #344158;
+  border-radius: 6px;
+  outline: 0;
+  background: #111925;
+  color: #c8d5e7;
+  font-size: 9px;
+  font-weight: 700;
+}
+.export-option select:focus {
+  border-color: #258cff;
+  box-shadow: 0 0 0 2px #258cff22;
+}
 .checker-export input {
   width: 15px;
   height: 15px;
@@ -781,6 +815,16 @@ footer {
   height: 512px;
 }
 @media (max-width: 1100px) {
+  footer {
+    gap: 10px;
+    padding-inline: 16px;
+  }
+  .export-option {
+    min-width: 62px;
+  }
+  .checker-export {
+    padding-inline: 8px;
+  }
   .anim {
     grid-template-columns:
       28px minmax(150px, 1fr) 115px minmax(150px, 0.8fr)

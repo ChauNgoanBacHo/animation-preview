@@ -10,6 +10,9 @@ const state = {
   output: localStorage.getItem("gif-output") || "",
   bakeChecker: localStorage.getItem("gif-bake-checker") !== "false",
   combineSymbols: localStorage.getItem("gif-combine-symbols") === "true",
+  objectSize: Number(localStorage.getItem("gif-object-size")) || 88,
+  cropPadding: Number(localStorage.getItem("gif-crop-padding")) || 8,
+  groupPerRow: Number(localStorage.getItem("gif-group-per-row")) || 5,
   files: [],
   configs: new Map(),
   active: "",
@@ -91,6 +94,33 @@ function normalizeGifAlpha(source) {
   return pixels;
 }
 
+function visiblePixelBounds(canvas) {
+  const { width, height } = canvas;
+  const pixels = canvas
+    .getContext("2d", { willReadFrequently: true })
+    .getImageData(0, 0, width, height).data;
+  let left = width, top = height, right = -1, bottom = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (pixels[(y * width + x) * 4 + 3] < 24) continue;
+      left = Math.min(left, x);
+      top = Math.min(top, y);
+      right = Math.max(right, x);
+      bottom = Math.max(bottom, y);
+    }
+  }
+  return right < left ? null : { left, top, right, bottom };
+}
+
+function expandCrop(bounds, padding, maxWidth, maxHeight) {
+  if (!bounds) return { x: 0, y: 0, width: maxWidth, height: maxHeight };
+  const x = Math.max(0, bounds.left - padding);
+  const y = Math.max(0, bounds.top - padding);
+  const right = Math.min(maxWidth - 1, bounds.right + padding);
+  const bottom = Math.min(maxHeight - 1, bounds.bottom + padding);
+  return { x, y, width: Math.max(1, right - x + 1), height: Math.max(1, bottom - y + 1) };
+}
+
 function framePixelsForExport(
   frameCanvas,
   bakeChecker,
@@ -125,7 +155,7 @@ function render() {
   <section class="toolbar"><label><span>Source folder</span><div><input data-source value="${esc(state.source)}" placeholder="Folder chứa Spine..."><button data-do="source">${icon("folder")}</button></div></label><button class="scan" data-do="scan" ${state.scanning ? "disabled" : ""}>${state.scanning ? "Scanning…" : "Scan Spine"}</button><i></i><label><span>GIF output</span><div><input data-output value="${esc(state.output)}" placeholder="Folder lưu GIF..."><button data-do="output">${icon("folder")}</button></div></label></section>
   ${state.error ? `<div class="notice error">${esc(state.error)}</div>` : ""}${state.status ? `<div class="notice ok">${esc(state.status)}</div>` : ""}
   <section class="workspace"><div class="headrow"><span>Spine asset</span><span>Animations · chọn skin và animation để export</span></div><div class="groups">${state.files.length ? state.files.map(groupView).join("") : emptyView()}</div></section>
-  <footer><div class="progress"><div><span>${state.exporting ? esc(state.status) : `${count} animation ready`}</span><strong>${state.exporting ? `${Math.round(state.progress * 100)}%` : state.combineSymbols ? "GROUP · 960×540" : "GIF · 20 FPS · 512px"}</strong></div><aside><em style="width:${state.exporting ? state.progress * 100 : 0}%"></em></aside></div><label class="checker-export"><input type="checkbox" data-role="combine-symbols" ${state.combineSymbols ? "checked" : ""}><span>Gộp Anim</span></label><label class="checker-export"><input type="checkbox" data-role="bake-checker" ${state.bakeChecker ? "checked" : ""}><span>Bake nền caro</span></label><button class="export" data-do="export" ${!count || state.exporting ? "disabled" : ""}>${icon("export")} ${state.exporting ? "Exporting…" : state.combineSymbols ? `Export 1 Group GIF` : `Export ${count} GIF${count === 1 ? "" : "s"}`}</button></footer>
+  <footer><div class="progress"><div><span>${state.exporting ? esc(state.status) : `${count} animation ready`}</span><strong>${state.exporting ? `${Math.round(state.progress * 100)}%` : state.combineSymbols ? "GROUP · 960×540" : "AUTO CROP · 20 FPS"}</strong></div><aside><em style="width:${state.exporting ? state.progress * 100 : 0}%"></em></aside></div><label class="export-option"><span>Object size</span><select data-role="object-size"><option value="70" ${state.objectSize === 70 ? "selected" : ""}>70%</option><option value="80" ${state.objectSize === 80 ? "selected" : ""}>80%</option><option value="88" ${state.objectSize === 88 ? "selected" : ""}>88%</option><option value="96" ${state.objectSize === 96 ? "selected" : ""}>96%</option></select></label><label class="export-option"><span>Padding</span><select data-role="crop-padding"><option value="4" ${state.cropPadding === 4 ? "selected" : ""}>4 px</option><option value="8" ${state.cropPadding === 8 ? "selected" : ""}>8 px</option><option value="16" ${state.cropPadding === 16 ? "selected" : ""}>16 px</option><option value="24" ${state.cropPadding === 24 ? "selected" : ""}>24 px</option></select></label>${state.combineSymbols ? `<label class="export-option"><span>Object / row</span><select data-role="group-per-row">${[2, 3, 4, 5, 6].map((value) => `<option value="${value}" ${state.groupPerRow === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>` : ""}<label class="checker-export"><input type="checkbox" data-role="combine-symbols" ${state.combineSymbols ? "checked" : ""}><span>Gộp Anim</span></label><label class="checker-export"><input type="checkbox" data-role="bake-checker" ${state.bakeChecker ? "checked" : ""}><span>Bake nền caro</span></label><button class="export" data-do="export" ${!count || state.exporting ? "disabled" : ""}>${icon("export")} ${state.exporting ? "Exporting…" : state.combineSymbols ? `Export 1 Group GIF` : `Export ${count} GIF${count === 1 ? "" : "s"}`}</button></footer>
   <aside class="preview ${state.active ? "open" : ""}"><div class="preview-title"><div><strong data-preview-name>Preview</strong><span>Loop theo đúng timeframe và skin đã chọn</span></div><div class="preview-actions"><button data-do="toggle-preview" title="Play/Pause">${state.previewPaused ? "▶" : "Ⅱ"}</button><button data-do="close" title="Đóng preview">×</button></div></div><div data-canvas class="canvas"></div>${previewTrimView()}</aside></main>`;
   mountStage();
 }
@@ -148,7 +178,7 @@ function animView(f, a) {
         )
         .join("")
     : '<option value="">Default</option>';
-  return `<div class="anim ${c.selected ? "selected" : ""} ${state.active === k ? "active" : ""}" data-key="${esc(k)}"><label class="check" title="Chọn animation để export GIF"><input type="checkbox" data-role="select" ${c.selected ? "checked" : ""}><span></span></label><button class="anim-name" data-do="preview"><b>▶</b><strong>${esc(a)}</strong></button><label class="skin"><span>Skin</span><select data-role="skin" ${f.skins?.length ? "" : "disabled"}>${skinOptions}</select></label><div class="row-progress" data-trim-editor data-key="${esc(k)}"><div><span>${fmt(c.start)}</span><output>${fmt(c.end)}</output></div><section style="--a:${(c.start / max) * 100}%;--b:${(c.end / max) * 100}%"><i></i><b></b><input type="range" data-role="start" min="0" max="${max}" step=".01" value="${c.start}"><input type="range" data-role="end" min="0" max="${max}" step=".01" value="${c.end}"></section></div><button class="preview-row-btn" data-do="preview">Preview</button></div>`;
+  return `<div class="anim ${c.selected ? "selected" : ""} ${state.active === k ? "active" : ""}" data-key="${esc(k)}"><label class="check" title="Chọn animation để export GIF"><input type="checkbox" data-role="select" ${c.selected ? "checked" : ""}><span></span></label><div class="anim-name"><b>◆</b><strong>${esc(a)}</strong></div><label class="skin"><span>Skin</span><select data-role="skin" ${f.skins?.length ? "" : "disabled"}>${skinOptions}</select></label><div class="row-progress" data-trim-editor data-key="${esc(k)}"><div><span>${fmt(c.start)}</span><output>${fmt(c.end)}</output></div><section style="--a:${(c.start / max) * 100}%;--b:${(c.end / max) * 100}%"><i></i><b></b><input type="range" data-role="start" min="0" max="${max}" step=".01" value="${c.start}"><input type="range" data-role="end" min="0" max="${max}" step=".01" value="${c.end}"></section></div><button class="preview-row-btn" data-do="preview">Preview</button></div>`;
 }
 
 function previewTrimView() {
@@ -354,20 +384,51 @@ async function encode(x, n, total) {
       ),
       w = Math.max(1, u.r - u.x),
       h = Math.max(1, u.b - u.y),
-      scale = Math.min((SIZE * 0.84) / w, (SIZE * 0.84) / h);
+      scale = Math.min(
+        (SIZE * (state.objectSize / 100)) / w,
+        (SIZE * (state.objectSize / 100)) / h,
+      );
     spine.scale.set(clamp(scale, 0.05, 8));
     spine.position.set(
       SIZE / 2 - (u.x + w / 2) * spine.scale.x,
       SIZE / 2 - (u.y + h / 2) * spine.scale.y,
     );
+    let pixelBounds = null;
+    for (const sample of samples) {
+      SpineStage.seek(spine, sample.time);
+      stage.renderOnce();
+      const bounds = visiblePixelBounds(
+        stage.extractCanvasRegion(0, 0, SIZE, SIZE),
+      );
+      if (!bounds) continue;
+      pixelBounds = pixelBounds
+        ? {
+            left: Math.min(pixelBounds.left, bounds.left),
+            top: Math.min(pixelBounds.top, bounds.top),
+            right: Math.max(pixelBounds.right, bounds.right),
+            bottom: Math.max(pixelBounds.bottom, bounds.bottom),
+          }
+        : bounds;
+    }
+    const crop = expandCrop(pixelBounds, state.cropPadding, SIZE, SIZE);
     const gif = GIFEncoder();
     const bakeChecker = state.bakeChecker || x.file.usesAdditiveBlend;
     for (let i = 0; i < samples.length; i++) {
       SpineStage.seek(spine, samples[i].time);
       stage.renderOnce();
-      const frameCanvas = stage.extractCanvasRegion(0, 0, SIZE, SIZE),
+      const frameCanvas = stage.extractCanvasRegion(
+          crop.x,
+          crop.y,
+          crop.width,
+          crop.height,
+        ),
         pixels = normalizeGifAlpha(
-          framePixelsForExport(frameCanvas, bakeChecker),
+          framePixelsForExport(
+            frameCanvas,
+            bakeChecker,
+            crop.width,
+            crop.height,
+          ),
         ),
         palette = quantize(pixels, 256, {
           format: "rgba4444",
@@ -390,7 +451,7 @@ async function encode(x, n, total) {
           }
         }
       }
-      gif.writeFrame(index, SIZE, SIZE, {
+      gif.writeFrame(index, crop.width, crop.height, {
         palette,
         delay: 1000 / FPS,
         repeat: 0,
@@ -434,7 +495,7 @@ async function encodeCombined(list) {
   stage.app.ticker.stop();
   try {
     const loaded = [];
-    const columns = Math.min(5, list.length);
+    const columns = Math.min(state.groupPerRow, list.length);
     const rows = Math.ceil(list.length / columns);
     const cellWidth = width / columns;
     const cellHeight = height / rows;
@@ -446,8 +507,10 @@ async function encodeCombined(list) {
       SpineStage.seek(spine, item.config.start);
       const bounds = spine.getLocalBounds();
       const scale = Math.min(
-        (cellWidth * 0.72) / Math.max(1, bounds.width),
-        (cellHeight * 0.72) / Math.max(1, bounds.height),
+        ((cellWidth - state.cropPadding * 2) * (state.objectSize / 100)) /
+          Math.max(1, bounds.width),
+        ((cellHeight - state.cropPadding * 2) * (state.objectSize / 100)) /
+          Math.max(1, bounds.height),
       );
       spine.scale.set(clamp(scale, 0.03, 8));
       const column = index % columns;
@@ -465,6 +528,28 @@ async function encodeCombined(list) {
       ),
     );
     const frameCount = Math.max(2, Math.round(duration * FPS));
+    let pixelBounds = null;
+    for (let frame = 0; frame < frameCount; frame += 1) {
+      const elapsed = frame / FPS;
+      loaded.forEach(({ item, spine }) => {
+        const length = Math.max(0.01, item.config.end - item.config.start);
+        SpineStage.seek(spine, item.config.start + (elapsed % length));
+      });
+      stage.renderOnce();
+      const bounds = visiblePixelBounds(
+        stage.extractCanvasRegion(0, 0, width, height),
+      );
+      if (!bounds) continue;
+      pixelBounds = pixelBounds
+        ? {
+            left: Math.min(pixelBounds.left, bounds.left),
+            top: Math.min(pixelBounds.top, bounds.top),
+            right: Math.max(pixelBounds.right, bounds.right),
+            bottom: Math.max(pixelBounds.bottom, bounds.bottom),
+          }
+        : bounds;
+    }
+    const crop = expandCrop(pixelBounds, state.cropPadding, width, height);
     const gif = GIFEncoder();
     const bakeChecker =
       state.bakeChecker || list.some((item) => item.file.usesAdditiveBlend);
@@ -475,9 +560,19 @@ async function encodeCombined(list) {
         SpineStage.seek(spine, item.config.start + (elapsed % length));
       });
       stage.renderOnce();
-      const frameCanvas = stage.extractCanvasRegion(0, 0, width, height);
+      const frameCanvas = stage.extractCanvasRegion(
+        crop.x,
+        crop.y,
+        crop.width,
+        crop.height,
+      );
       const pixels = normalizeGifAlpha(
-        framePixelsForExport(frameCanvas, bakeChecker, width, height),
+        framePixelsForExport(
+          frameCanvas,
+          bakeChecker,
+          crop.width,
+          crop.height,
+        ),
       );
       const palette = quantize(pixels, 256, {
         format: "rgba4444",
@@ -488,7 +583,7 @@ async function encodeCombined(list) {
       });
       const bitmap = applyPalette(pixels, palette, "rgba4444");
       const transparentIndex = palette.findIndex((color) => color[3] === 0);
-      gif.writeFrame(bitmap, width, height, {
+      gif.writeFrame(bitmap, crop.width, crop.height, {
         palette,
         delay: 1000 / FPS,
         repeat: 0,
@@ -558,7 +653,20 @@ async function exportAll() {
 
 app.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-do]");
-  if (!b) return;
+  if (!b) {
+    const row = e.target.closest(".anim");
+    const isControl = e.target.closest(
+      "input, select, button, label, [data-trim-editor]",
+    );
+    if (row && !isControl) {
+      const item = findItem(row.dataset.key);
+      if (item) {
+        item.config.selected = !item.config.selected;
+        render();
+      }
+    }
+    return;
+  }
   const a = b.dataset.do;
   if (a === "source") {
     const v = await window.spinePreview.selectFolder();
@@ -611,6 +719,24 @@ app.addEventListener("change", (e) => {
   if (t.dataset.role === "combine-symbols") {
     state.combineSymbols = t.checked;
     localStorage.setItem("gif-combine-symbols", String(t.checked));
+    render();
+    return;
+  }
+  if (t.dataset.role === "object-size") {
+    state.objectSize = Number(t.value) || 88;
+    localStorage.setItem("gif-object-size", String(state.objectSize));
+    render();
+    return;
+  }
+  if (t.dataset.role === "crop-padding") {
+    state.cropPadding = Number(t.value) || 8;
+    localStorage.setItem("gif-crop-padding", String(state.cropPadding));
+    render();
+    return;
+  }
+  if (t.dataset.role === "group-per-row") {
+    state.groupPerRow = clamp(Number(t.value) || 5, 2, 6);
+    localStorage.setItem("gif-group-per-row", String(state.groupPerRow));
     render();
     return;
   }
